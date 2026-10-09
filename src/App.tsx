@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Circle, Play, Square } from "lucide-react";
+import { Circle, Monitor, Moon, Play, Square, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sidebar, type PageId } from "@/components/layout/Sidebar";
 import { AccountsPage } from "@/features/accounts/AccountsPage";
@@ -8,6 +8,8 @@ import { UsagePage } from "@/features/usage/UsagePage";
 import { ProxyPage } from "@/features/proxy/ProxyPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { opencodeService, type OpencodeStatus } from "@/services/opencode";
+import { settingsService } from "@/services/settings";
+import { applyTheme, watchSystemTheme } from "@/lib/theme";
 import type { QuotaEvent } from "@/services/quota";
 
 function StatusDot({ status }: { status: OpencodeStatus | null }) {
@@ -55,6 +57,31 @@ function App() {
     };
   }, []);
 
+  const [theme, setTheme] = useState<string>("system");
+
+  useEffect(() => {
+    void settingsService
+      .get()
+      .then((settings) => setTheme(settings.theme ?? "system"))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    applyTheme(theme);
+    return watchSystemTheme(() => theme);
+  }, [theme]);
+
+  async function cycleTheme() {
+    const next = theme === "light" ? "dark" : theme === "dark" ? "system" : "light";
+    setTheme(next);
+    try {
+      const current = await settingsService.get();
+      await settingsService.set({ ...current, theme: next });
+    } catch (error) {
+      console.error("failed to save theme", error);
+    }
+  }
+
   async function toggleServer() {
     setBusy(true);
     try {
@@ -84,6 +111,21 @@ function App() {
             {status?.error && (
               <span className="max-w-md truncate text-xs text-destructive">{status.error}</span>
             )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void cycleTheme()}
+              title={`Theme: ${theme}`}
+            >
+              {theme === "dark" ? (
+                <Moon className="size-3.5" />
+              ) : theme === "light" ? (
+                <Sun className="size-3.5" />
+              ) : (
+                <Monitor className="size-3.5" />
+              )}
+              <span className="ml-1 capitalize">{theme}</span>
+            </Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void toggleServer()}>
               {status?.running ? (
                 <>

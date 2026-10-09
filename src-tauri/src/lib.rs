@@ -8,11 +8,14 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(OpencodeManager::new())
         .setup(|app| {
             let handle = app.handle().clone();
             services::settings::init(&handle);
             services::proxy::init(&handle);
+            let tray = services::tray::build(&handle)?;
+            app.manage(tray);
             services::watcher::spawn(handle.clone());
             // Keep opencode serve running whenever the app is open — quota
             // monitoring and account switching both go through it.

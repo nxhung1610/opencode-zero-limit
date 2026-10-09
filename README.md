@@ -20,7 +20,9 @@ its free tier: **quota visibility, multi-account switching, proxy pools**.
   `HTTPS_PROXY` with `NO_PROXY=localhost,127.0.0.1`. Modes: `off`, `auto` (one sticky IP per
   account, round-robin on failure), `manual`.
 - **Settings** — auto-start the local server, auto-rotate toggle, opencode binary path override
-  (GUI apps inherit a stripped `PATH`).
+  (GUI apps inherit a stripped `PATH`), light/dark/system theme, and **in-app updates**
+  (signed artifacts from GitHub Releases).
+- **Tray icon** — serve + quota status at a glance, quick start/stop, show window, quit.
 
 ## How it works (opencode internals discovered in Phase 0)
 
@@ -40,9 +42,34 @@ npm install
 npm run tauri dev     # requires Rust (rustup) + opencode CLI on PATH
 npm run build         # tsc + vite build
 cd src-tauri && cargo check
+bash scripts/contract-test.sh   # requires opencode-ai CLI; pins the API surface we rely on
 ```
 
-Requires opencode ≥ 1.18 (tested against 1.18.35).
+Requires opencode ≥ 1.18 (tested against 1.18.35). CI runs on every push to `main`:
+frontend build, `cargo check`, and the contract test (`.github/workflows/ci.yml`).
+
+## Release
+
+```bash
+# 1. bump version in package.json AND src-tauri/tauri.conf.json
+# 2. commit, then:
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The `release` workflow (`.github/workflows/release.yml`) builds macOS (arm64 + x64),
+Linux and Windows, signs the updater bundles, and creates a **draft** GitHub release with
+`latest.json` for auto-update.
+
+Required repository secrets (Settings → Secrets → Actions):
+
+| Secret | Content |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of the private key file (kept at `~/.tauri/…) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
+
+> Note: no Developer ID / notarization yet — macOS users will need right-click → Open on
+> first launch, and Windows SmartScreen will warn. Both disappear once proper code signing
+> is set up (see PLAN.md Phase 5).
 
 ## Layout
 
@@ -63,10 +90,11 @@ PLAN.md                 phase plan, risks, milestones
 
 ## Roadmap
 
-- Phase 5: tray icon, dark mode, custom icons, updater + GitHub Releases, CI (3-OS build),
-  macOS/Windows signing, onboarding.
 - DB polling as a second quota signal (SSE only sees sessions that run on *this* app's server).
+- Per-account quick switch from the tray menu.
+- macOS Developer ID signing + notarization, Windows signtool.
+- Screenshots for the store page.
 
 ## License
 
-MIT (pending release).
+MIT — see [LICENSE](LICENSE).

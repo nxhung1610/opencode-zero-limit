@@ -14,31 +14,48 @@ fn require_port(manager: &OpencodeManager) -> Result<u16, String> {
 
 #[tauri::command]
 pub async fn opencode_start(
+    app: AppHandle,
     manager: State<'_, OpencodeManager>,
 ) -> Result<OpencodeStatus, String> {
-    Ok(manager.start().await)
+    let status = manager.start().await;
+    crate::services::tray::update_serve(&app, &status);
+    if status.healthy {
+        crate::services::tray::update_quota(&app, "ok");
+    }
+    Ok(status)
 }
 
 #[tauri::command]
 pub async fn opencode_status(
+    app: AppHandle,
     manager: State<'_, OpencodeManager>,
 ) -> Result<OpencodeStatus, String> {
-    Ok(manager.status().await)
+    let status = manager.status().await;
+    crate::services::tray::update_serve(&app, &status);
+    Ok(status)
 }
 
 #[tauri::command]
-pub async fn opencode_stop(manager: State<'_, OpencodeManager>) -> Result<OpencodeStatus, String> {
-    Ok(manager.stop().await)
+pub async fn opencode_stop(
+    app: AppHandle,
+    manager: State<'_, OpencodeManager>,
+) -> Result<OpencodeStatus, String> {
+    let status = manager.stop().await;
+    crate::services::tray::update_serve(&app, &status);
+    Ok(status)
 }
 
 /// The TUI disposes its instance after a switch so the new console config is
 /// loaded — restarting our own serve child has the same effect.
 #[tauri::command]
 pub async fn opencode_restart(
+    app: AppHandle,
     manager: State<'_, OpencodeManager>,
 ) -> Result<OpencodeStatus, String> {
     manager.stop().await;
-    Ok(manager.start().await)
+    let status = manager.start().await;
+    crate::services::tray::update_serve(&app, &status);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -57,6 +74,7 @@ pub async fn console_orgs(manager: State<'_, OpencodeManager>) -> Result<Vec<Con
 
 #[tauri::command]
 pub async fn console_switch(
+    app: AppHandle,
     manager: State<'_, OpencodeManager>,
     account_id: String,
     org_id: String,
@@ -64,7 +82,9 @@ pub async fn console_switch(
     let port = require_port(&manager)?;
     console::switch(port, &account_id, &org_id).await?;
     manager.stop().await;
-    Ok(manager.start().await)
+    let status = manager.start().await;
+    crate::services::tray::update_serve(&app, &status);
+    Ok(status)
 }
 
 #[tauri::command]

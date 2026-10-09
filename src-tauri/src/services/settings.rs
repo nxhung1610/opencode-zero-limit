@@ -17,10 +17,17 @@ pub struct Settings {
     /// override for the opencode binary, detected automatically when empty
     #[serde(default)]
     pub opencode_bin: Option<String>,
+    /// light | dark | system
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "system".to_string()
 }
 
 impl Default for Settings {
@@ -29,6 +36,7 @@ impl Default for Settings {
             auto_rotate: false,
             auto_start: true,
             opencode_bin: None,
+            theme: default_theme(),
         }
     }
 }

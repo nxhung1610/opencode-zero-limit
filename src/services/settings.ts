@@ -4,6 +4,7 @@ export interface Settings {
   autoRotate: boolean;
   autoStart: boolean;
   opencodeBin?: string | null;
+  theme: string;
 }
 
 export const settingsService = {

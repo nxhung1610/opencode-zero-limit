@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { FolderOpen, Save, Settings } from "lucide-react";
+import { Download, FolderOpen, RefreshCw, Save, Settings } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { settingsService, type Settings as AppSettings } from "@/services/settings";
@@ -15,6 +17,11 @@ export function SettingsPage({ onStatus }: SettingsPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -29,6 +36,53 @@ export function SettingsPage({ onStatus }: SettingsPageProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
+
+  async function checkForUpdates() {
+    setUpdating(true);
+    setUpdate(null);
+    setUpdateNote(null);
+    try {
+      const found = await check();
+      if (found) {
+        setUpdate(found);
+        setUpdateNote(`v${found.version} available${found.body ? ` — ${found.body}` : ""}`);
+      } else {
+        setUpdateNote("up to date");
+      }
+    } catch (e) {
+      setUpdateNote(`check failed: ${String(e)}`);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function installUpdate() {
+    if (!update) return;
+    setUpdating(true);
+    setProgress(0);
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          setProgress(0);
+        } else if (event.event === "Finished") {
+          setProgress(100);
+        }
+      });
+      setUpdateNote("installed — restart the app to apply");
+      setUpdate(null);
+    } catch (e) {
+      setUpdateNote(`install failed: ${String(e)}`);
+    } finally {
+      setUpdating(false);
+      setProgress(null);
+    }
+  }
 
   async function save(next: AppSettings, restart = false) {
     setBusy(true);
@@ -137,10 +191,30 @@ export function SettingsPage({ onStatus }: SettingsPageProps) {
           GUI apps inherit a stripped PATH — if spawn fails, paste the full path here (e.g.
           <span className="font-mono"> /Users/you/.nvm/versions/node/v24.21.0/bin/opencode</span>).
         </p>
-        <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-          <FolderOpen className="size-3.5" />
-          Config lives in this app's config directory (settings.json, proxies.json).
+      </div>
+
+      <div className="rounded-lg border border-border px-4 py-3">
+        <div className="text-sm font-medium">Updates</div>
+        <div className="mt-1 mb-2 text-xs text-muted-foreground">
+          Current version: <span className="font-mono">{appVersion ?? "…"}</span>
+          {updateNote ? ` · ${updateNote}` : ""}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" disabled={updating} onClick={() => void checkForUpdates()}>
+            <RefreshCw className="size-3.5" /> Check for updates
+          </Button>
+          {update && (
+            <Button size="sm" disabled={updating} onClick={() => void installUpdate()}>
+              <Download className="size-3.5" /> Install v{update.version}
+              {progress === 100 ? " (done)" : progress !== null ? " (downloading…)" : ""}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <FolderOpen className="size-3.5" />
+        Config lives in this app's config directory (settings.json, proxies.json).
       </div>
     </section>
   );

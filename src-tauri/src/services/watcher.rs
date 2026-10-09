@@ -149,6 +149,14 @@ async fn handle_event(app: &AppHandle, port: u16, value: &Value) {
         rotate(app, port, &mut event).await;
     }
 
+    crate::services::tray::update_quota(
+        app,
+        &match &event.rotated_to {
+            Some(target) => format!("hit — rotated to {target}"),
+            None => format!("hit ({})", event.reason),
+        },
+    );
+
     if let Err(error) = app.emit("quota", event.clone()) {
         println!("[quota-watcher] emit failed: {error}");
     }

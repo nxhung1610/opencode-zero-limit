@@ -26,6 +26,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Keep opencode CLI on free tier",
+    "longDescription": "Quota view, multi-account switching and proxy pools for the opencode CLI.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -33,5 +36,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/nxhung1610/opencode-zero-limit/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDMjdGRTczRjBBQjA4OEEKUldTS0NLdndjLzRublBuaExzOG9GVUZJMWZrYmdDRGUwSG5EMTk2ai9lZ0FoN0hNanU0c1QwV1cK"
+    }
   }
 }
