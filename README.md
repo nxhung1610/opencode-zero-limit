@@ -5,6 +5,33 @@ its free tier: **quota visibility, multi-account switching, proxy pools**.
 
 > Status: active development — Phases 0–4 implemented, release packaging pending.
 
+## Install
+
+**macOS (recommended — bypasses Gatekeeper without any signing):**
+
+```bash
+brew install --cask ./homebrew/opencode-zero-limit.rb
+```
+
+Or download the `.dmg` from
+[GitHub Releases](https://github.com/nxhung1610/opencode-zero-limit/releases),
+copy the app to `/Applications`, then clear the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine /Applications/opencode-zero-limit.app
+```
+
+(Without a paid Developer ID, macOS blocks unsigned downloads on first launch —
+right-click → Open also works.)
+
+**Windows:** download the `.msi`/`.exe` from Releases; on the SmartScreen prompt
+click *More info → Run anyway*. **Linux:** download the `.AppImage`/`.deb` — no
+signing needed.
+
+The app is unsigned, like most open-source desktop releases without corporate
+backing. In-app updates are still cryptographically verified (minisign key pinned
+in the app, artifacts signed in CI).
+
 ## What it does
 
 - **Accounts** — lists console accounts/orgs stored by opencode, switches the active account+org
@@ -67,9 +94,9 @@ Required repository secrets (Settings → Secrets → Actions):
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of the private key file (kept at `~/.tauri/…) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
 
-> Note: no Developer ID / notarization yet — macOS users will need right-click → Open on
-> first launch, and Windows SmartScreen will warn. Both disappear once proper code signing
-> is set up (see PLAN.md Phase 5).
+> Note: builds are unsigned (no Developer ID / SmartScreen cert). See
+> [Install](#install) for the Gatekeeper/SmartScreen workarounds. The Homebrew
+> cask path avoids the macOS warning entirely.
 
 ## Layout
 
