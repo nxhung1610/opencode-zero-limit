@@ -51,6 +51,12 @@ relaydock proxy install-wrapper
 
 The installer adds a symlink at `~/.local/bin/opencode`; it leaves the real OpenCode installation untouched, checks that `~/.local/bin` precedes the CLI in `PATH`, and delegates each command to the real binary with RelayDock's selected proxy environment. The wrapper is opt-in and only affects commands resolved through that PATH entry; an absolute path to the original binary bypasses it. Open a new terminal or run `rehash` after installation. Remove it with `relaydock proxy uninstall-wrapper`.
 
+## Proxy routing architecture
+
+![RelayDock proxy routing for OpenCode](.archify/architecture-opencode-proxy-20261012-163120/opencode-proxy.svg)
+
+[Standalone interactive Archify viewer](.archify/architecture-opencode-proxy-20261012-163120/opencode-proxy.html) — download the HTML and open it in a browser; GitHub does not execute repository HTML inside the README.
+
 ## Local-only architecture
 
 The React interface and TypeScript/Node.js service are packaged in this repository. The service binds to a random port on `127.0.0.1`, checks Host/Origin headers, issues a per-run session token for mutating API calls and quota events, and serves the built `dist/` assets. Node's built-in SQLite API reads local usage data; Node child processes manage the local OpenCode CLI. The UI/API layer has no hosted service.
