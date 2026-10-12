@@ -1,12 +1,15 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { buildOpenCodeProxyEnv } from "./proxy.js";
 import type { SettingsStore } from "./settings.js";
 import type { OpencodeStatus } from "./types.js";
 
 const sleep = (ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
+const execFileAsync = promisify(execFile);
+const OUTPUT_TAIL_CHARS = 4_000;
 
 async function freePort(): Promise<number> {
   const { createServer } = await import("node:net");
@@ -32,6 +35,7 @@ export class OpencodeManager {
   private serverPassword: string | null = null;
   private startTask: Promise<OpencodeStatus> | null = null;
   private stopping = new WeakSet<ChildProcess>();
+  private outputTail = "";
 
   constructor(
     private readonly settings: SettingsStore,
@@ -52,7 +56,7 @@ export class OpencodeManager {
     return { Authorization: `Basic ${credentials}` };
   }
 
-  resolveBinary(): string | null {
+  resolveBinary(): Promise<string | null> {
     return resolveBinary(this.settings.load().opencodeBin);
   }
 
@@ -78,7 +82,7 @@ export class OpencodeManager {
       await this.stopChild();
     }
 
-    const binary = this.resolveBinary();
+    const binary = await this.resolveBinary();
     if (!binary) {
       this.cliMajorVersion = null;
       this.serverPassword = null;
@@ -87,7 +91,7 @@ export class OpencodeManager {
     }
 
     try {
-      this.cliMajorVersion = installedCliMajorVersion(binary);
+      this.cliMajorVersion = await installedCliMajorVersion(binary);
     } catch (error) {
       this.cliMajorVersion = null;
       this.serverPassword = null;
@@ -126,10 +130,11 @@ export class OpencodeManager {
     if (proxy) console.log("[opencode] spawning with selected proxy");
 
     let child: ChildProcess;
+    this.outputTail = "";
     try {
       child = spawn(binary, ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
         env,
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         shell: process.platform === "win32" && /\.cmd$/i.test(binary),
       });
@@ -137,6 +142,11 @@ export class OpencodeManager {
       this.error = `failed to spawn opencode serve: ${error instanceof Error ? error.message : String(error)}`;
       return this.snapshot(false, false, null);
     }
+    const closed = new Promise<void>((resolveClosed) => child.once("close", () => resolveClosed()));
+    const secret = this.serverPassword;
+    const capture = (chunk: Buffer) => this.captureOutput(child, chunk, secret);
+    child.stdout?.on("data", capture);
+    child.stderr?.on("data", capture);
 
     this.child = child;
     this.port = port;
@@ -167,7 +177,13 @@ export class OpencodeManager {
       await sleep(250);
     }
 
-    this.error = "opencode serve did not become healthy in time";
+    if (this.child === child) {
+      this.error = `opencode serve did not become healthy in time${this.outputSummary()}`;
+    } else {
+      // The exit handler has recorded the exit; wait for stdio to flush so the reason includes the last output.
+      await Promise.race([closed, sleep(1_000)]);
+      this.error = `${this.error ?? "opencode serve exited"}${this.outputSummary()}`;
+    }
     return this.snapshot(this.child === child, false, port);
   }
 
@@ -206,6 +222,18 @@ export class OpencodeManager {
   async restart(): Promise<OpencodeStatus> {
     await this.stop();
     return this.start();
+  }
+
+  private captureOutput(child: ChildProcess, chunk: Buffer, secret: string | null): void {
+    if (this.child !== null && this.child !== child) return;
+    let text = chunk.toString("utf8");
+    if (secret) text = text.split(secret).join("[redacted]");
+    this.outputTail = (this.outputTail + text).slice(-OUTPUT_TAIL_CHARS);
+  }
+
+  private outputSummary(): string {
+    const lines = this.outputTail.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-3);
+    return lines.length > 0 ? `: ${lines.join(" | ").slice(0, 400)}` : "";
   }
 
   private statusFromHealthy(port: number, version: string): OpencodeStatus {
@@ -254,15 +282,16 @@ async function probe(port: number, cliMajorVersion: number | null, password: str
   }
 }
 
-function installedCliMajorVersion(binary: string): number {
+async function installedCliMajorVersion(binary: string): Promise<number> {
   let output: string;
   try {
-    output = execFileSync(binary, ["--version"], {
+    const { stdout } = await execFileAsync(binary, ["--version"], {
       encoding: "utf8",
       timeout: 5_000,
       windowsHide: true,
       shell: process.platform === "win32" && /\.cmd$/i.test(binary),
-    }).trim();
+    });
+    output = stdout.trim();
   } catch (error) {
     throw new Error(`could not read OpenCode CLI version: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -271,16 +300,16 @@ function installedCliMajorVersion(binary: string): number {
   return Number(match[1]);
 }
 
-export function resolveBinary(configured?: string | null): string | null {
+export async function resolveBinary(configured?: string | null): Promise<string | null> {
   const explicit = process.env.OPENCODE_BIN?.trim();
   if (explicit && existsSync(expandHome(explicit))) return resolve(expandHome(explicit));
   if (configured?.trim() && existsSync(expandHome(configured.trim()))) return resolve(expandHome(configured.trim()));
 
   const lookup = process.platform === "win32" ? "where.exe" : "/bin/sh";
   try {
-    const output = process.platform === "win32"
-      ? execFileSync(lookup, ["opencode"], { encoding: "utf8", timeout: 3_000, windowsHide: true })
-      : execFileSync(lookup, ["-lc", "command -v opencode"], { encoding: "utf8", timeout: 3_000 });
+    const { stdout: output } = process.platform === "win32"
+      ? await execFileAsync(lookup, ["opencode"], { encoding: "utf8", timeout: 3_000, windowsHide: true })
+      : await execFileAsync(lookup, ["-lc", "command -v opencode"], { encoding: "utf8", timeout: 3_000 });
     const found = output.split(/\r?\n/).map((value) => value.trim()).find(Boolean);
     if (found && existsSync(found)) return resolve(found);
   } catch {

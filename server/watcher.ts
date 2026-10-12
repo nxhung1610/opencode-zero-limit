@@ -173,59 +173,66 @@ export class QuotaWatcher {
 
   private async handle(event: Omit<QuotaEvent, "rotatedTo">): Promise<void> {
     const complete: QuotaEvent = { ...event, rotatedTo: null };
-    if (this.settings.load().autoRotate) await this.rotate(complete);
-    for (const listener of this.listeners) listener(complete);
+    // Show the limit right away; a second event follows if an account was switched.
+    this.emit(complete);
+    if (!this.settings.load().autoRotate) return;
+    const rotatedTo = await this.rotate();
+    if (rotatedTo !== null) this.emit({ ...complete, rotatedTo });
   }
 
-  private async rotate(event: QuotaEvent): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastRotateAt < ROTATE_COOLDOWN_MS) return;
-    this.lastRotateAt = now;
+  private emit(event: QuotaEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+
+  // The cooldown covers switch attempts only, so a quota event with nothing to switch to does not block the next one.
+  private async rotate(): Promise<string | null> {
+    if (Date.now() - this.lastRotateAt < ROTATE_COOLDOWN_MS) return null;
 
     if (this.manager.getCliMajorVersion() === 2) {
       let connections: ConsoleConnection[];
       try {
         connections = await consoleConnections(this.manager);
       } catch {
-        return;
+        return null;
       }
-      if (connections.length < 2) return;
+      if (connections.length < 2) return null;
 
       const sorted = [...connections].sort((a, b) => compareText(a.label, b.label));
       const activeIndex = sorted.findIndex((connection) => connection.active);
       const next = sorted[activeIndex < 0 ? 0 : (activeIndex + 1) % sorted.length]!;
-      if (next.active) return;
+      if (next.active) return null;
+      this.lastRotateAt = Date.now();
       try {
         await consoleActivate(this.manager, next.id);
       } catch {
-        return;
+        return null;
       }
-      event.rotatedTo = next.label;
       console.log(`[quota-watcher] rotated to ${next.label}`);
-      return;
+      return next.label;
     }
 
     let orgs: ConsoleOrg[];
     try {
       orgs = await consoleOrgs(this.manager);
     } catch {
-      return;
+      return null;
     }
-    if (orgs.length < 2) return;
+    if (orgs.length < 2) return null;
 
     const sorted = [...orgs].sort((a, b) =>
       compareText(a.accountEmail, b.accountEmail) || compareText(a.orgID, b.orgID));
     const activeIndex = sorted.findIndex((org) => org.active);
     const next = sorted[activeIndex < 0 ? 0 : (activeIndex + 1) % sorted.length]!;
-    if (next.active) return;
+    if (next.active) return null;
 
+    this.lastRotateAt = Date.now();
     try {
       await consoleSwitch(this.manager, next.accountID, next.orgID);
     } catch {
-      return;
+      return null;
     }
     await this.manager.restart();
-    event.rotatedTo = `${next.orgName} · ${next.accountEmail}`;
     console.log(`[quota-watcher] rotated to ${next.orgName} (${next.accountEmail})`);
+    return `${next.orgName} · ${next.accountEmail}`;
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -7,18 +7,7 @@ const projectRoot = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);
 
 function printUsage() {
-  console.log(`Usage: relaydock <command> [options]
-
-Commands:
-  serve       Start the local web app and open it in your browser
-  proxy install-wrapper    Route default opencode commands through RelayDock's proxy
-  proxy uninstall-wrapper  Remove the RelayDock OpenCode wrapper
-
-Options:
-  --no-open   Start the server without opening a browser
-  -h, --help  Show this help
-
-The web server listens on loopback and stops when this process exits.`);
+  console.log(readFileSync(path.join(__dirname, "usage.txt"), "utf8").trimEnd());
 }
 
 if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
