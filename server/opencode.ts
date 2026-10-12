@@ -114,11 +114,14 @@ export class OpencodeManager {
       return this.snapshot(false, false, null);
     }
 
-    let proxy: string | null = null;
+    let proxy: string | null;
     try {
       proxy = this.selectProxy();
     } catch (error) {
-      console.warn(`[proxy] could not select a proxy; starting direct: ${error instanceof Error ? error.message : String(error)}`);
+      this.cliMajorVersion = null;
+      this.serverPassword = null;
+      this.error = error instanceof Error ? error.message : String(error);
+      return this.snapshot(false, false, null);
     }
     const env = buildOpenCodeProxyEnv(proxy);
     delete env.OPENCODE_SERVER_PASSWORD;

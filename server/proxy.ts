@@ -15,11 +15,20 @@ export const DEFAULT_PROXY_STATE: ProxyState = {
   bindings: {},
 };
 
+// Keeps the user's own NO_PROXY entries and always bypasses the local managed server.
+function mergeNoProxy(value: string | undefined): string {
+  const entries = (value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  for (const local of ["localhost", "127.0.0.1"]) {
+    if (!entries.includes(local)) entries.push(local);
+  }
+  return entries.join(",");
+}
+
 export function buildOpenCodeProxyEnv(proxyUrl: string | null, baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
-    NO_PROXY: "localhost,127.0.0.1",
-    no_proxy: "localhost,127.0.0.1",
+    NO_PROXY: mergeNoProxy(baseEnv.NO_PROXY),
+    no_proxy: mergeNoProxy(baseEnv.no_proxy),
   };
   if (proxyUrl) {
     env.HTTP_PROXY = proxyUrl;
@@ -84,7 +93,7 @@ export function normalizeProxyState(value: unknown): ProxyState {
     ? manualId
     : null;
   return {
-    mode: mode === "manual" && !selectedId ? "off" : mode,
+    mode,
     manualId: selectedId,
     proxies: entries,
     bindings,
@@ -247,16 +256,30 @@ export class ProxyStore {
     return this.save(state);
   }
 
+  /**
+   * URL of the proxy this spawn should use, or null for Off. Outside Off it throws rather than
+   * falling back to a direct connection, so the caller can refuse to start.
+   */
   selectForSpawn(): string | null {
     const state = this.load();
     if (state.mode === "off") return null;
     if (state.mode === "manual") {
-      return state.proxies.find((entry) => entry.id === state.manualId && entry.enabled)?.url ?? null;
+      const selected = state.proxies.find((entry) => entry.id === state.manualId);
+      if (!selected) throw new Error("No proxy is selected for manual mode. Choose a proxy, or switch the proxy mode to Off.");
+      if (!selected.enabled) {
+        throw new Error(`The selected proxy (${selected.label}) is disabled. Enable it, choose another proxy, or switch the proxy mode to Off.`);
+      }
+      return selected.url;
     }
 
+    if (!state.proxies.some((entry) => entry.enabled)) {
+      throw new Error("Auto mode needs at least one enabled proxy. Enable a proxy, or switch the proxy mode to Off.");
+    }
     const account = activeAccountKey();
     const usable = state.proxies.filter((entry) => entry.enabled && entry.health?.ok !== false);
-    if (usable.length === 0) return null;
+    if (usable.length === 0) {
+      throw new Error("No enabled proxy passed its last test. Test the pool again, enable a proxy, or switch the proxy mode to Off.");
+    }
     const boundId = state.bindings[account];
     const bound = usable.find((entry) => entry.id === boundId);
     if (bound) return bound.url;

@@ -172,10 +172,10 @@ export function ProxyPage({ status, onStatus }: ProxyPageProps) {
   const routeProxyLabel = state?.mode === "off"
     ? "Direct connection"
     : state?.mode === "manual"
-      ? activeManualProxy ? maskProxyUrl(activeManualProxy.url) : "Direct fallback"
+      ? activeManualProxy ? maskProxyUrl(activeManualProxy.url) : "No usable proxy"
       : eligibleCount > 0
         ? "Automatic pool"
-        : "Direct fallback";
+        : "No usable proxy";
   const routeSourceState = state?.mode === "off"
     ? "direct"
     : state?.mode === "manual"
@@ -197,8 +197,9 @@ export function ProxyPage({ status, onStatus }: ProxyPageProps) {
           <h1 className="page-title">Proxies</h1>
           <p className="page-description">
             Free-tier limits are counted per IP. A proxy pool gives every account its own sticky
-            IP; opencode honours <span className="font-mono text-xs">HTTPS_PROXY</span> with{" "}
-            <span className="font-mono text-xs">NO_PROXY=localhost</span> pinned by this app.
+            IP; opencode honours <span className="font-mono text-xs">HTTPS_PROXY</span> and always
+            bypasses <span className="font-mono text-xs">localhost</span> through{" "}
+            <span className="font-mono text-xs">NO_PROXY</span>.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -282,7 +283,7 @@ export function ProxyPage({ status, onStatus }: ProxyPageProps) {
                   {state.mode === "auto"
                     ? eligibleCount > 0
                       ? `${eligibleCount} eligible · ${Object.keys(state.bindings ?? {}).length} saved bindings`
-                      : "No eligible proxy; requests fall back to direct"
+                      : "No eligible proxy; OpenCode will not start"
                     : state.mode === "manual"
                       ? activeManualProxy
                         ? activeManualProxy.health?.ok === true
@@ -290,7 +291,7 @@ export function ProxyPage({ status, onStatus }: ProxyPageProps) {
                           : activeManualProxy.health?.ok === false
                             ? "Selected · last test failed"
                             : "Selected · not tested"
-                        : "No enabled manual selection; direct fallback"
+                        : "Selected proxy is disabled or missing; OpenCode will not start"
                       : "Proxy mode is off"}
                 </div>
               </div>
@@ -325,12 +326,12 @@ export function ProxyPage({ status, onStatus }: ProxyPageProps) {
       <div className="proxy-feedback">
         {state?.mode === "auto" && eligibleCount === 0 && (
           <div role="status" className="status-message status-message--warning">
-            Auto mode has no eligible proxies. Requests will connect directly; enable a proxy or retest the pool to retry failed entries.
+            Auto mode has no eligible proxy, so OpenCode will not start. Enable a proxy or retest the pool, or switch to Off to connect directly.
           </div>
         )}
         {state?.mode === "manual" && !manualProxyAvailable && (
           <div role="status" className="status-message status-message--warning">
-            The selected manual proxy is unavailable. opencode will connect directly until you choose an enabled proxy.
+            The selected manual proxy is unavailable, so OpenCode will not start. Enable it or choose another proxy, or switch to Off to connect directly.
           </div>
         )}
         {notice && (

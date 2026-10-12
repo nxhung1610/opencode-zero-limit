@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createServer, request as httpRequest, type ServerResponse } from "node:http";
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test, { mock } from "node:test";
 import { LocalWebServer, requestHeadersAllowed } from "./webServer.js";
 import { OpencodeManager } from "./opencode.js";
-import { normalizeProxyState, parseProxyImportLine, ProxyStore } from "./proxy.js";
+import { buildOpenCodeProxyEnv, normalizeProxyState, parseProxyImportLine, ProxyStore } from "./proxy.js";
 import { SettingsStore } from "./settings.js";
 import {
   consoleActivate,
@@ -129,6 +129,8 @@ console.log(JSON.stringify({ args: process.argv.slice(2), httpProxy: process.env
       HTTP_PROXY: "http://inherited.invalid:8080",
       HTTPS_PROXY: "http://inherited.invalid:8080",
       ALL_PROXY: "http://inherited.invalid:8080",
+      NO_PROXY: "corp.internal",
+      no_proxy: "corp.internal",
     },
   })) as { args: string[]; httpProxy: string | null; httpsProxy: string | null; allProxy: string | null; noProxy: string | null };
 
@@ -144,7 +146,7 @@ console.log(JSON.stringify({ args: process.argv.slice(2), httpProxy: process.env
     assert.equal(proxied.httpProxy, "http://127.0.0.1:8765");
     assert.equal(proxied.httpsProxy, "http://127.0.0.1:8765");
     assert.equal(proxied.allProxy, "http://127.0.0.1:8765");
-    assert.equal(proxied.noProxy, "localhost,127.0.0.1");
+    assert.equal(proxied.noProxy, "corp.internal,localhost,127.0.0.1");
 
     store.save({ mode: "off", manualId: null, proxies: [], bindings: {} });
     const direct = runWrapped();
@@ -154,6 +156,56 @@ console.log(JSON.stringify({ args: process.argv.slice(2), httpProxy: process.env
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("default OpenCode wrapper refuses to start OpenCode when the selected proxy is unusable", () => {
+  const root = tempDir();
+  const fakeBin = join(root, "fake-bin");
+  const configDir = join(root, "config");
+  const marker = join(root, "cli-ran");
+  mkdirSync(fakeBin, { recursive: true });
+  const fakeCli = join(fakeBin, "opencode");
+  writeFileSync(fakeCli, `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");
+`);
+  chmodSync(fakeCli, 0o755);
+  new ProxyStore(join(configDir, "proxies.json")).save({
+    mode: "manual",
+    manualId: "disabled-proxy",
+    proxies: [{ id: "disabled-proxy", label: "Disabled", url: "http://127.0.0.1:8765", enabled: false, health: null }],
+    bindings: {},
+  });
+  const wrapper = resolve(process.cwd(), "bin", "opencode-proxy.cjs");
+  try {
+    const result = spawnSync(process.execPath, [wrapper, "--version"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        RELAYDOCK_CONFIG_DIR: configDir,
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /is disabled/);
+    assert.equal(existsSync(marker), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode proxy env keeps the user's NO_PROXY entries and always bypasses localhost", () => {
+  const proxied = buildOpenCodeProxyEnv("http://127.0.0.1:8765", {
+    NO_PROXY: "corp.internal,localhost",
+    HTTPS_PROXY: "http://old.invalid:1",
+  });
+  assert.equal(proxied.HTTPS_PROXY, "http://127.0.0.1:8765");
+  assert.equal(proxied.NO_PROXY, "corp.internal,localhost,127.0.0.1");
+  assert.equal(proxied.no_proxy, "localhost,127.0.0.1");
+
+  const direct = buildOpenCodeProxyEnv(null, { HTTPS_PROXY: "http://old.invalid:1", no_proxy: "corp.internal" });
+  assert.equal(direct.HTTPS_PROXY, undefined);
+  assert.equal(direct.NO_PROXY, "localhost,127.0.0.1");
+  assert.equal(direct.no_proxy, "corp.internal,localhost,127.0.0.1");
 });
 
 test("proxy parsing preserves old formats and supports URL imports", () => {
@@ -189,7 +241,7 @@ test("proxy parsing preserves old formats and supports URL imports", () => {
   }
 });
 
-test("proxy selection follows the mode and keeps one sticky proxy per account", () => {
+test("proxy selection follows the mode, keeps one sticky proxy per account, and never falls back to direct", () => {
   const root = tempDir();
   const previousXdg = process.env.XDG_DATA_HOME;
   const dataDir = join(root, "opencode");
@@ -214,7 +266,7 @@ test("proxy selection follows the mode and keeps one sticky proxy per account", 
     store.save({ mode: "manual", manualId: "px-b", proxies: [proxy("px-a", true), proxy("px-b", true)], bindings: {} });
     assert.equal(store.selectForSpawn(), "http://px-b.test:8080");
     store.save({ mode: "manual", manualId: "px-b", proxies: [proxy("px-a", true), proxy("px-b", true, false)], bindings: {} });
-    assert.equal(store.selectForSpawn(), null);
+    assert.throws(() => store.selectForSpawn(), /is disabled/);
 
     store.save({
       mode: "auto",
@@ -228,12 +280,20 @@ test("proxy selection follows the mode and keeps one sticky proxy per account", 
     useAccount("account-a");
     assert.equal(store.selectForSpawn(), "http://px-b.test:8080");
 
-    // Current behaviour: with no healthy proxy the child runs direct. Revisit if the product chooses fail-closed.
     store.save({ mode: "auto", manualId: null, proxies: [proxy("px-a", false)], bindings: {} });
-    assert.equal(store.selectForSpawn(), null);
+    assert.throws(() => store.selectForSpawn(), /passed its last test/);
+    store.save({ mode: "auto", manualId: null, proxies: [proxy("px-a", true, false)], bindings: {} });
+    assert.throws(() => store.selectForSpawn(), /at least one enabled proxy/);
 
     store.save({ mode: "off", manualId: null, proxies: [proxy("px-a", true)], bindings: {} });
     assert.equal(store.selectForSpawn(), null);
+
+    store.save({ mode: "manual", manualId: "gone", proxies: [proxy("px-a", true)], bindings: {} });
+    assert.equal(store.load().mode, "manual");
+    assert.throws(() => store.selectForSpawn(), /No proxy is selected/);
+
+    writeFileSync(join(root, "proxies.json"), "{broken");
+    assert.throws(() => store.selectForSpawn(), /cannot read proxies\.json/);
   } finally {
     database.close();
     if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;
@@ -300,6 +360,33 @@ process.exitCode = 3;
     assert.equal(status.running, false);
     assert.match(status.error ?? "", /exited with code 3/);
     assert.match(status.error ?? "", /fatal: provider config is invalid/);
+  } finally {
+    await manager.stop();
+    if (previousBinary === undefined) delete process.env.OPENCODE_BIN;
+    else process.env.OPENCODE_BIN = previousBinary;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode manager does not spawn serve when proxy selection fails", async () => {
+  const root = tempDir();
+  const binary = join(root, "fake-opencode");
+  const marker = join(root, "serve-ran");
+  const previousBinary = process.env.OPENCODE_BIN;
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("opencode v1.18.35"); process.exit(0); }
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");
+`);
+  chmodSync(binary, 0o755);
+  process.env.OPENCODE_BIN = binary;
+  const manager = new OpencodeManager(new SettingsStore(join(root, "settings.json")), () => {
+    throw new Error("The selected proxy is disabled.");
+  });
+  try {
+    const status = await manager.start();
+    assert.equal(status.running, false);
+    assert.equal(status.error, "The selected proxy is disabled.");
+    assert.equal(existsSync(marker), false);
   } finally {
     await manager.stop();
     if (previousBinary === undefined) delete process.env.OPENCODE_BIN;
