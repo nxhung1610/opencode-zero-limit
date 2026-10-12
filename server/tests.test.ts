@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { createServer, request as httpRequest } from "node:http";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest, type ServerResponse } from "node:http";
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { LocalWebServer, requestHeadersAllowed } from "./webServer.js";
 import { OpencodeManager } from "./opencode.js";
 import { normalizeProxyState, parseProxyImportLine, ProxyStore } from "./proxy.js";
@@ -82,6 +82,28 @@ test("settings preserve defaults and read legacy snake_case files", () => {
       autoRotate: false, autoStart: true, opencodeBin: null, theme: "dark",
     });
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("settings keep an unreadable file aside before a save replaces it", () => {
+  const root = tempDir();
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    const file = join(root, "settings.json");
+    writeFileSync(file, "{broken");
+    const store = new SettingsStore(file);
+    assert.deepEqual(store.load(), {
+      autoRotate: false, autoStart: true, opencodeBin: null, theme: "dark",
+    });
+    assert.equal(warn.mock.callCount(), 1);
+    store.save({ autoRotate: true, autoStart: true, opencodeBin: null, theme: "light" });
+    const kept = readdirSync(root).filter((name) => name.startsWith("settings.json.corrupt-"));
+    assert.equal(kept.length, 1);
+    assert.equal(readFileSync(join(root, kept[0] ?? ""), "utf8"), "{broken");
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).autoRotate, true);
+  } finally {
+    warn.mock.restore();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -167,6 +189,59 @@ test("proxy parsing preserves old formats and supports URL imports", () => {
   }
 });
 
+test("proxy selection follows the mode and keeps one sticky proxy per account", () => {
+  const root = tempDir();
+  const previousXdg = process.env.XDG_DATA_HOME;
+  const dataDir = join(root, "opencode");
+  mkdirSync(dataDir);
+  const database = new DatabaseSync(join(dataDir, "opencode.db"));
+  try {
+    database.exec("CREATE TABLE account_state (id INTEGER PRIMARY KEY, active_account_id TEXT)");
+    database.prepare("INSERT INTO account_state(id, active_account_id) VALUES (1, ?)").run("account-a");
+    process.env.XDG_DATA_HOME = root;
+    const store = new ProxyStore(join(root, "proxies.json"));
+    const proxy = (id: string, ok: boolean | null = null, enabled = true) => ({
+      id,
+      label: id,
+      url: `http://${id}.test:8080`,
+      enabled,
+      health: ok === null ? null : { ok, checkedAt: 1, latencyMs: 1, error: null },
+    });
+    const useAccount = (accountId: string) => {
+      database.prepare("UPDATE account_state SET active_account_id = ? WHERE id = 1").run(accountId);
+    };
+
+    store.save({ mode: "manual", manualId: "px-b", proxies: [proxy("px-a", true), proxy("px-b", true)], bindings: {} });
+    assert.equal(store.selectForSpawn(), "http://px-b.test:8080");
+    store.save({ mode: "manual", manualId: "px-b", proxies: [proxy("px-a", true), proxy("px-b", true, false)], bindings: {} });
+    assert.equal(store.selectForSpawn(), null);
+
+    store.save({
+      mode: "auto",
+      manualId: null,
+      proxies: [proxy("px-a", false), proxy("px-b", true), proxy("px-c", true)],
+      bindings: {},
+    });
+    assert.equal(store.selectForSpawn(), "http://px-b.test:8080");
+    useAccount("account-b");
+    assert.equal(store.selectForSpawn(), "http://px-c.test:8080");
+    useAccount("account-a");
+    assert.equal(store.selectForSpawn(), "http://px-b.test:8080");
+
+    // Current behaviour: with no healthy proxy the child runs direct. Revisit if the product chooses fail-closed.
+    store.save({ mode: "auto", manualId: null, proxies: [proxy("px-a", false)], bindings: {} });
+    assert.equal(store.selectForSpawn(), null);
+
+    store.save({ mode: "off", manualId: null, proxies: [proxy("px-a", true)], bindings: {} });
+    assert.equal(store.selectForSpawn(), null);
+  } finally {
+    database.close();
+    if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previousXdg;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode manager starts, probes, and stops its child process", async () => {
   const root = tempDir();
   const binary = join(root, "fake-opencode");
@@ -200,6 +275,31 @@ server.listen(port, "127.0.0.1");
     const stopped = await manager.stop();
     assert.equal(stopped.running, false);
     assert.equal(stopped.port, null);
+  } finally {
+    await manager.stop();
+    if (previousBinary === undefined) delete process.env.OPENCODE_BIN;
+    else process.env.OPENCODE_BIN = previousBinary;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode manager reports why serve exited during startup", async () => {
+  const root = tempDir();
+  const binary = join(root, "fake-opencode-crash");
+  const previousBinary = process.env.OPENCODE_BIN;
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("opencode v1.18.35"); process.exit(0); }
+console.error("fatal: provider config is invalid");
+process.exitCode = 3;
+`);
+  chmodSync(binary, 0o755);
+  process.env.OPENCODE_BIN = binary;
+  const manager = new OpencodeManager(new SettingsStore(join(root, "settings.json")), () => null);
+  try {
+    const status = await manager.start();
+    assert.equal(status.running, false);
+    assert.match(status.error ?? "", /exited with code 3/);
+    assert.match(status.error ?? "", /fatal: provider config is invalid/);
   } finally {
     await manager.stop();
     if (previousBinary === undefined) delete process.env.OPENCODE_BIN;
@@ -443,6 +543,214 @@ test("quota watcher uses the v2 SSE route and forwards quota events", async () =
   } finally {
     await watcher.stop();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const quotaPayload = {
+  type: "session.status",
+  properties: {
+    sessionID: "session-quota",
+    status: {
+      type: "retry",
+      attempt: 1,
+      next: 1_000,
+      action: { reason: "free_tier_limit", provider: "opencode", title: "Limit reached", message: "Wait" },
+    },
+  },
+};
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for condition");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+}
+
+// Fake OpenCode HTTP server: quota event stream plus the Console routes the watcher calls. The manager is a stub.
+async function startQuotaFixture(cliMajorVersion: 1 | 2) {
+  const credentials: Array<{ id: string; integrationID: string; label: string; active: boolean }> = [];
+  const orgs: Array<{ accountID: string; accountEmail: string; accountUrl: string; orgID: string; orgName: string; active: boolean }> = [];
+  const activations: string[] = [];
+  const switches: Array<{ accountID: string; orgID: string }> = [];
+  let stream: ServerResponse | null = null;
+  let finishedAt = 0;
+  let restarts = 0;
+  const send = (response: ServerResponse, status: number, body?: unknown) => {
+    response.statusCode = status;
+    if (body === undefined) {
+      response.end();
+      return;
+    }
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(body));
+  };
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (request.method === "GET" && (url.pathname === "/api/event" || url.pathname === "/event")) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write(": connected\n\n");
+      stream = response;
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/credential") {
+      send(response, 200, { data: credentials });
+      return;
+    }
+    const activate = url.pathname.match(/^\/api\/credential\/([^/]+)\/activate$/);
+    if (request.method === "POST" && activate) {
+      const id = decodeURIComponent(activate[1] ?? "");
+      setTimeout(() => {
+        for (const credential of credentials) credential.active = credential.id === id;
+        activations.push(id);
+        finishedAt = Date.now();
+        send(response, 204);
+      }, 200);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/experimental/console/orgs") {
+      send(response, 200, { orgs });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/experimental/console/switch") {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { accountID: string; orgID: string };
+        switches.push(body);
+        for (const org of orgs) org.active = org.accountID === body.accountID && org.orgID === body.orgID;
+        finishedAt = Date.now();
+        send(response, 204);
+      });
+      return;
+    }
+    send(response, 404, { error: "not found" });
+  });
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") reject(new Error("missing test server address"));
+      else resolvePort(address.port);
+    });
+  });
+  const manager = {
+    getPort: () => port,
+    getCliMajorVersion: () => cliMajorVersion,
+    apiHeaders: () => ({}),
+    status: async () => ({ running: true, healthy: true, port, version: null, error: null }),
+    restart: async () => {
+      restarts += 1;
+      return { running: true, healthy: true, port, version: null, error: null };
+    },
+  } as unknown as OpencodeManager;
+  return {
+    manager,
+    credentials,
+    orgs,
+    activations,
+    switches,
+    restarts: () => restarts,
+    finishedAt: () => finishedAt,
+    connected: () => stream !== null,
+    emitQuota: () => {
+      stream?.write(`data: ${JSON.stringify(quotaPayload)}\n\n`);
+    },
+    close: async () => {
+      stream?.end();
+      await new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      });
+    },
+  };
+}
+
+test("quota watcher shows a limit at once, then again once the next Console account is active", async () => {
+  const root = tempDir();
+  const fixture = await startQuotaFixture(2);
+  fixture.credentials.push(
+    { id: "cred-a", integrationID: "opencode", label: "alpha", active: true },
+    { id: "cred-b", integrationID: "opencode", label: "beta", active: false },
+  );
+  const settings = new SettingsStore(join(root, "settings.json"));
+  settings.save({ autoRotate: true, autoStart: false, opencodeBin: null, theme: "dark" });
+  const received: Array<{ at: number; event: QuotaEvent }> = [];
+  const watcher = new QuotaWatcher(fixture.manager, settings);
+  watcher.subscribe((event) => received.push({ at: Date.now(), event }));
+  try {
+    watcher.start();
+    await waitFor(() => fixture.connected());
+    fixture.emitQuota();
+    await waitFor(() => received.length === 2);
+    assert.equal(received[0]?.event.rotatedTo, null);
+    assert.equal(received[1]?.event.rotatedTo, "beta");
+    assert.ok((received[0]?.at ?? Infinity) < fixture.finishedAt(), "the limit is shown before the switch completes");
+    assert.deepEqual(fixture.activations, ["cred-b"]);
+
+    fixture.emitQuota();
+    await waitFor(() => received.length === 3);
+    assert.equal(received[2]?.event.rotatedTo, null);
+    assert.deepEqual(fixture.activations, ["cred-b"]);
+  } finally {
+    await watcher.stop();
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("quota watcher does not spend the rotation cooldown when there is nothing to switch to", async () => {
+  const root = tempDir();
+  const fixture = await startQuotaFixture(2);
+  fixture.credentials.push({ id: "cred-a", integrationID: "opencode", label: "alpha", active: true });
+  const settings = new SettingsStore(join(root, "settings.json"));
+  settings.save({ autoRotate: true, autoStart: false, opencodeBin: null, theme: "dark" });
+  const received: QuotaEvent[] = [];
+  const watcher = new QuotaWatcher(fixture.manager, settings);
+  watcher.subscribe((event) => received.push(event));
+  try {
+    watcher.start();
+    await waitFor(() => fixture.connected());
+    fixture.emitQuota();
+    await waitFor(() => received.length === 1);
+    assert.deepEqual(fixture.activations, []);
+
+    fixture.credentials.push({ id: "cred-b", integrationID: "opencode", label: "beta", active: false });
+    fixture.emitQuota();
+    await waitFor(() => received.length === 3);
+    assert.equal(received[2]?.rotatedTo, "beta");
+    assert.deepEqual(fixture.activations, ["cred-b"]);
+  } finally {
+    await watcher.stop();
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("quota watcher switches OpenCode v1 organizations and restarts the managed server", async () => {
+  const root = tempDir();
+  const fixture = await startQuotaFixture(1);
+  fixture.orgs.push(
+    { accountID: "acc-1", accountEmail: "a@example.test", accountUrl: "", orgID: "org-1", orgName: "Personal", active: true },
+    { accountID: "acc-2", accountEmail: "b@example.test", accountUrl: "", orgID: "org-2", orgName: "Team", active: false },
+  );
+  const settings = new SettingsStore(join(root, "settings.json"));
+  settings.save({ autoRotate: true, autoStart: false, opencodeBin: null, theme: "dark" });
+  const received: QuotaEvent[] = [];
+  const watcher = new QuotaWatcher(fixture.manager, settings);
+  watcher.subscribe((event) => received.push(event));
+  try {
+    watcher.start();
+    await waitFor(() => fixture.connected());
+    fixture.emitQuota();
+    await waitFor(() => received.length === 2);
+    assert.equal(received[1]?.rotatedTo, "Team · b@example.test");
+    assert.deepEqual(fixture.switches, [{ accountID: "acc-2", orgID: "org-2" }]);
+    assert.equal(fixture.restarts(), 1);
+  } finally {
+    await watcher.stop();
+    await fixture.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

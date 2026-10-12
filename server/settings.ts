@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { appConfigDir, writeJsonFile } from "./config.js";
 import type { Settings } from "./types.js";
@@ -37,7 +37,8 @@ export class SettingsStore {
     if (!existsSync(this.filePath)) return { ...DEFAULT_SETTINGS };
     try {
       return parseSettings(JSON.parse(readFileSync(this.filePath, "utf8")) as unknown);
-    } catch {
+    } catch (error) {
+      console.warn(`[settings] cannot read ${this.filePath}; using defaults: ${error instanceof Error ? error.message : String(error)}`);
       return { ...DEFAULT_SETTINGS };
     }
   }
@@ -60,7 +61,18 @@ export class SettingsStore {
       throw new Error("theme must be a string");
     }
     const settings = parseSettings(raw);
+    this.keepUnreadableFile();
     writeJsonFile(this.filePath, settings);
     return settings;
+  }
+
+  // An unparseable file is moved aside so a save never silently discards it.
+  private keepUnreadableFile(): void {
+    if (!existsSync(this.filePath)) return;
+    try {
+      JSON.parse(readFileSync(this.filePath, "utf8"));
+    } catch {
+      renameSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`);
+    }
   }
 }

@@ -13,18 +13,7 @@ import { QuotaWatcher } from "./watcher.js";
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function printUsage(): void {
-  console.log(`Usage: relaydock <command> [options]
-
-Commands:
-  serve       Start the local web app and open it in your browser
-  proxy install-wrapper    Route default opencode commands through RelayDock's proxy
-  proxy uninstall-wrapper  Remove the RelayDock OpenCode wrapper
-
-Options:
-  --no-open   Start the server without opening a browser
-  -h, --help  Show this help
-
-The web server listens on loopback and stops when this process exits.`);
+  console.log(readFileSync(join(PROJECT_ROOT, "bin", "usage.txt"), "utf8").trimEnd());
 }
 
 function readVersion(): string {
