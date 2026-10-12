@@ -1,28 +1,32 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./bridge";
 import type { OpencodeStatus } from "./opencode";
 
-export interface ConsoleOrg {
-  accountID: string;
-  accountEmail: string;
-  accountUrl: string;
-  orgID: string;
-  orgName: string;
+export interface ConsoleConnection {
+  id: string;
+  label: string;
   active: boolean;
+  method: "oauth";
 }
 
-export interface ConsoleState {
-  consoleManagedProviders: string[];
-  activeOrgName?: string;
-  switchableOrgCount: number;
+export interface ConsoleLoginAttempt {
+  attemptID: string;
+  url: string;
+  instructions: string;
+  mode: "auto" | "code";
 }
+
+export type ConsoleLoginStatus =
+  | { status: "pending" }
+  | { status: "complete" }
+  | { status: "failed" | "expired"; message: string };
 
 export const consoleService = {
-  state: () => invoke<ConsoleState>("console_state"),
-  orgs: () => invoke<ConsoleOrg[]>("console_orgs"),
-  /** Switches active console org and restarts opencode serve to apply it. */
-  switch: (accountID: string, orgID: string) =>
-    invoke<OpencodeStatus>("console_switch", { accountId: accountID, orgId: orgID }),
-  /** Opens a terminal running `opencode console login` (device-code flow). */
-  login: () => invoke<string>("console_login"),
-  logout: (email: string) => invoke<string>("console_logout", { email }),
+  connections: () => invokeCommand<ConsoleConnection[]>("console_connections"),
+  loginStart: () => invokeCommand<ConsoleLoginAttempt>("console_login_start"),
+  loginStatus: (attemptID: string) => invokeCommand<ConsoleLoginStatus>("console_login_status", { attemptID }),
+  loginComplete: (attemptID: string, code: string) =>
+    invokeCommand<void>("console_login_complete", { attemptID, code }),
+  loginCancel: (attemptID: string) => invokeCommand<void>("console_login_cancel", { attemptID }),
+  activate: (credentialID: string) => invokeCommand<OpencodeStatus>("console_activate", { credentialID }),
+  logout: (credentialID: string) => invokeCommand<string>("console_logout", { credentialID }),
 };

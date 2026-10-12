@@ -1,7 +1,7 @@
 import type { OpencodeStatus } from "./opencode";
 
 /**
- * Emitted by the Rust watcher (`quota` event) when opencode reports a
+ * Emitted by the local Node watcher (`quota` event) when opencode reports a
  * free-tier or account/Go usage limit over SSE (`session.status` → retry).
  */
 export interface QuotaEvent {

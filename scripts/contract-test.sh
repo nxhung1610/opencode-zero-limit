@@ -4,11 +4,22 @@
 set -euo pipefail
 
 PORT="${OPENCODE_CONTRACT_PORT:-4096}"
-LOG="${TMPDIR:-/tmp}/ozl-contract-serve.log"
+LOG=$(mktemp "${TMPDIR:-/tmp}/relaydock-contract-serve.XXXXXX")
+DOC_PATH=$(mktemp "${TMPDIR:-/tmp}/relaydock-contract-doc.XXXXXX")
+SERVE_PID=""
+cleanup() {
+  if [ -n "$SERVE_PID" ]; then
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+  fi
+  rm -f "$DOC_PATH" "$LOG"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 opencode serve --port "$PORT" --hostname 127.0.0.1 >"$LOG" 2>&1 &
 SERVE_PID=$!
-trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
 
 echo "waiting for opencode serve on :${PORT}..."
 for i in $(seq 1 60); do
@@ -21,9 +32,10 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 
-curl -s "http://127.0.0.1:$PORT/doc" -o /tmp/ozl-contract-doc.json
+curl -fsS "http://127.0.0.1:$PORT/global/health" | python3 -c 'import json,sys; health=json.load(sys.stdin); assert isinstance(health.get("healthy"), bool) and isinstance(health.get("version"), str), health'
+curl -fsS "http://127.0.0.1:$PORT/doc" -o "$DOC_PATH"
 
-python3 - <<'EOF'
+python3 - "$DOC_PATH" <<'EOF'
 import json, sys
 
 required = [
@@ -34,7 +46,7 @@ required = [
     "/experimental/console/orgs",
     "/experimental/console/switch",
 ]
-doc = json.load(open("/tmp/ozl-contract-doc.json"))
+doc = json.load(open(sys.argv[1]))
 paths = doc["paths"]
 
 missing = [p for p in required if p not in paths]

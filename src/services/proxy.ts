@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./bridge";
 
 export type ProxyMode = "off" | "manual" | "auto";
 
@@ -25,14 +25,14 @@ export interface ProxyState {
 }
 
 export const proxyService = {
-  list: () => invoke<ProxyState>("proxy_list"),
-  import: (text: string) => invoke<ProxyState>("proxy_import", { text }),
-  remove: (id: string) => invoke<ProxyState>("proxy_remove", { id }),
+  list: () => invokeCommand<ProxyState>("proxy_list"),
+  import: (text: string) => invokeCommand<ProxyState>("proxy_import", { text }),
+  remove: (id: string) => invokeCommand<ProxyState>("proxy_remove", { id }),
   setEnabled: (id: string, enabled: boolean) =>
-    invoke<ProxyState>("proxy_set_enabled", { id, enabled }),
+    invokeCommand<ProxyState>("proxy_set_enabled", { id, enabled }),
   setMode: (mode: ProxyMode, manualId?: string) =>
-    invoke<ProxyState>("proxy_set_mode", { mode, manualId }),
-  checkAll: () => invoke<ProxyState>("proxy_check_all"),
+    invokeCommand<ProxyState>("proxy_set_mode", { mode, manualId }),
+  checkAll: () => invokeCommand<ProxyState>("proxy_check_all"),
 };
 
 export function maskProxyUrl(url: string) {

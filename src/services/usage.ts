@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./bridge";
 
 export interface ModelUsage {
   model: string;
@@ -20,5 +20,5 @@ export interface UsageSummary {
 }
 
 export const usageService = {
-  summary: (days: number) => invoke<UsageSummary>("usage_summary", { days }),
+  summary: (days: number) => invokeCommand<UsageSummary>("usage_summary", { days }),
 };

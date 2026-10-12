@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  frontend:
+  app:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,23 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-
-  backend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - name: Install Linux webview deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential curl wget file \
-            libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev libssl-dev patchelf
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: npm test
 
   contract:
     runs-on: ubuntu-latest

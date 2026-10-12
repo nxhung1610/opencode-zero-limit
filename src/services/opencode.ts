@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./bridge";
 
 export interface OpencodeStatus {
   running: boolean;
@@ -9,10 +9,10 @@ export interface OpencodeStatus {
 }
 
 export const opencodeService = {
-  start: () => invoke<OpencodeStatus>("opencode_start"),
-  status: () => invoke<OpencodeStatus>("opencode_status"),
-  stop: () => invoke<OpencodeStatus>("opencode_stop"),
-  restart: () => invoke<OpencodeStatus>("opencode_restart"),
+  start: () => invokeCommand<OpencodeStatus>("opencode_start"),
+  status: () => invokeCommand<OpencodeStatus>("opencode_status"),
+  stop: () => invokeCommand<OpencodeStatus>("opencode_stop"),
+  restart: () => invokeCommand<OpencodeStatus>("opencode_restart"),
   /** Path of the opencode binary this app will spawn. */
-  binary: () => invoke<string | null>("opencode_binary"),
+  binary: () => invokeCommand<string | null>("opencode_binary"),
 };

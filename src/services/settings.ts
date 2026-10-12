@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./bridge";
 
 export interface Settings {
   autoRotate: boolean;
@@ -8,6 +8,6 @@ export interface Settings {
 }
 
 export const settingsService = {
-  get: () => invoke<Settings>("settings_get"),
-  set: (settings: Settings) => invoke<Settings>("settings_set", { settings }),
+  get: () => invokeCommand<Settings>("settings_get"),
+  set: (settings: Settings) => invokeCommand<Settings>("settings_set", { settings }),
 };
