@@ -16,23 +16,36 @@ struct PageHeader<Actions: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 24) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.largeTitle.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
-
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 560, alignment: .leading)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 20) {
+                heading.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                actions.fixedSize(horizontal: true, vertical: false)
             }
 
-            Spacer(minLength: 8)
-            actions
+            VStack(alignment: .leading, spacing: 12) {
+                heading
+                HStack {
+                    Spacer(minLength: 0)
+                    actions.fixedSize(horizontal: true, vertical: false)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 4)
+        .padding(.bottom, 2)
+    }
+
+    private var heading: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.title.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 560, alignment: .leading)
+        }
     }
 }

@@ -1,36 +1,56 @@
 import RelayDockCore
 import SwiftUI
 
+private enum ProxyInspectorPanel: String, CaseIterable, Identifiable {
+    case routing
+    case pool
+    case importURLs
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .routing: "Routing Policy"
+        case .pool: "Proxy Pool"
+        case .importURLs: "Import Proxies"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .routing: "arrow.left.arrow.right"
+        case .pool: "server.rack"
+        case .importURLs: "square.and.arrow.down"
+        }
+    }
+}
+
 struct ProxiesView: View {
     @Bindable var model: AppModel
     @State private var importText = ""
+    @State private var selectedPanel: ProxyInspectorPanel = .routing
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                PageHeader(
-                    title: "Proxies",
-                    subtitle: "Choose how the managed OpenCode process connects to the network."
-                ) {
-                    EmptyView()
-                }
-
-                routingSection
-                proxyPoolSection
-                importSection
-
-                Label(
-                    "Manual and Auto fail closed. If a proxy cannot be selected, OpenCode will not fall back to a direct connection.",
-                    systemImage: "lock.shield"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 18) {
+            PageHeader(
+                title: "Proxies",
+                subtitle: "Choose how the managed OpenCode process connects to the network."
+            ) {
+                EmptyView()
             }
-            .frame(maxWidth: 920, alignment: .leading)
-            .padding(28)
-            .frame(maxWidth: .infinity, alignment: .top)
+
+            proxyWorkspace
+            .frame(minHeight: 400)
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 1)
+            }
         }
+        .padding(24)
+        .frame(maxWidth: 1080, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .disabled(model.serverBusy)
         .alert("Proxy Error", isPresented: Binding(
             get: { model.proxyError != nil },
@@ -40,6 +60,72 @@ struct ProxiesView: View {
         } message: {
             Text(model.proxyError ?? "Unknown error")
         }
+    }
+
+    private var proxyWorkspace: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                proxyPanelList
+                    .frame(width: 180)
+
+                Divider()
+
+                proxyPanelDetail
+                    .frame(minWidth: 400)
+            }
+            .frame(minWidth: 621)
+
+            VStack(alignment: .leading, spacing: 0) {
+                proxyPanelPicker
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+
+                Divider()
+
+                proxyPanelDetail
+            }
+        }
+    }
+
+    private var proxyPanelList: some View {
+        List(selection: $selectedPanel) {
+            Section("Proxy Setup") {
+                ForEach(ProxyInspectorPanel.allCases) { panel in
+                    Label(panel.title, systemImage: panel.symbol)
+                        .tag(panel)
+                }
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+    }
+
+    private var proxyPanelPicker: some View {
+        Picker("Proxy Setup", selection: $selectedPanel) {
+            ForEach(ProxyInspectorPanel.allCases) { panel in
+                Text(panel.title).tag(panel)
+            }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private var proxyPanelDetail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                switch selectedPanel {
+                case .routing:
+                    routingSection
+                case .pool:
+                    proxyPoolSection
+                case .importURLs:
+                    importSection
+                }
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var routingSection: some View {
@@ -56,7 +142,11 @@ struct ProxiesView: View {
                 .pickerStyle(.segmented)
 
                 if model.proxyState.mode == .manual {
-                    LabeledContent("Selected proxy") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Selected proxy")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
                         Picker("Selected proxy", selection: Binding(
                             get: { model.proxyState.manualId ?? "" },
                             set: { model.chooseManualProxy($0) }
@@ -67,7 +157,7 @@ struct ProxiesView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .frame(maxWidth: 340, alignment: .trailing)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
 
@@ -157,20 +247,21 @@ struct ProxiesView: View {
                     }
                     .accessibilityLabel("Proxy URLs to import")
 
-                HStack(alignment: .center, spacing: 16) {
-                    Text("One URL per line. Credentials are masked in the list and stored locally.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 8)
-
-                    Button("Import Proxies", systemImage: "square.and.arrow.down") {
-                        model.importProxies(importText)
-                        importText = ""
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 16) {
+                        importFootnote
+                        Spacer(minLength: 8)
+                        importButton
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .frame(minWidth: 440)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        importFootnote
+                        HStack {
+                            Spacer()
+                            importButton
+                        }
+                    }
                 }
             }
         } label: {
@@ -178,53 +269,107 @@ struct ProxiesView: View {
         }
     }
 
+    private var importFootnote: some View {
+        Text("One URL per line. Credentials are masked in the list and stored locally.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var importButton: some View {
+        Button("Import Proxies", systemImage: "square.and.arrow.down") {
+            model.importProxies(importText)
+            importText = ""
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
     private func proxyRow(_ proxy: ProxyEntry) -> some View {
-        HStack(spacing: 12) {
-            Toggle(proxy.label, isOn: Binding(
-                get: { proxy.enabled },
-                set: { model.setProxyEnabled(proxy.id, enabled: $0) }
-            ))
-            .toggleStyle(.checkbox)
-            .frame(minWidth: 130, maxWidth: 190, alignment: .leading)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                proxyToggle(proxy)
+                    .frame(minWidth: 130, maxWidth: 170, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(maskedProxyURL(proxy.url))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                healthLabel(proxy.health)
+                proxyDetails(proxy)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                proxyManualAction(proxy)
+                removeProxyButton(proxy)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 440)
 
-            if model.proxyState.mode == .manual && model.proxyState.manualId == proxy.id {
-                Label("Selected", systemImage: "checkmark.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.green)
-                    .fixedSize()
-            } else {
-                Button("Set Manual") {
-                    model.chooseManualProxy(proxy.id)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    proxyToggle(proxy)
+                    Spacer(minLength: 8)
+                    removeProxyButton(proxy)
                 }
-                .buttonStyle(.borderless)
-                .disabled(!proxy.enabled)
-                .help("Use this proxy in Manual mode")
-            }
 
-            Button(role: .destructive) {
-                model.removeProxy(proxy.id)
-            } label: {
-                Image(systemName: "trash")
-                    .frame(width: 28, height: 28)
+                proxyDetails(proxy)
+
+                HStack {
+                    Spacer(minLength: 8)
+                    proxyManualAction(proxy)
+                }
             }
-            .buttonStyle(.borderless)
-            .disabled(model.checkingProxies)
-            .help("Remove proxy")
-            .accessibilityLabel("Remove \(proxy.label)")
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+    }
+
+    private func proxyToggle(_ proxy: ProxyEntry) -> some View {
+        Toggle(isOn: Binding(
+            get: { proxy.enabled },
+            set: { model.setProxyEnabled(proxy.id, enabled: $0) }
+        )) {
+            Text(proxy.label)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .toggleStyle(.checkbox)
+    }
+
+    private func proxyDetails(_ proxy: ProxyEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(maskedProxyURL(proxy.url))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            healthLabel(proxy.health)
+        }
+    }
+
+    @ViewBuilder
+    private func proxyManualAction(_ proxy: ProxyEntry) -> some View {
+        if model.proxyState.mode == .manual && model.proxyState.manualId == proxy.id {
+            Label("Selected", systemImage: "checkmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(.green)
+                .fixedSize()
+        } else {
+            Button("Set Manual") {
+                model.chooseManualProxy(proxy.id)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!proxy.enabled)
+            .help("Use this proxy in Manual mode")
+        }
+    }
+
+    private func removeProxyButton(_ proxy: ProxyEntry) -> some View {
+        Button(role: .destructive) {
+            model.removeProxy(proxy.id)
+        } label: {
+            Image(systemName: "trash")
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.borderless)
+        .disabled(model.checkingProxies)
+        .help("Remove proxy")
+        .accessibilityLabel("Remove \(proxy.label)")
     }
 
     @ViewBuilder
@@ -238,11 +383,14 @@ struct ProxiesView: View {
             )
             .font(.caption)
             .foregroundStyle(health.ok ? .green : .red)
+            .lineLimit(1)
+            .truncationMode(.middle)
             .help(health.error ?? "")
         } else {
             Label("Not tested", systemImage: "questionmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 

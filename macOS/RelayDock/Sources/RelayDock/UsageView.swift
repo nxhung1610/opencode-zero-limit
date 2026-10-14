@@ -114,16 +114,31 @@ struct UsageView: View {
     @ViewBuilder
     private func summaryContent(_ summary: UsageSummary) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 150, maximum: 240), spacing: 22)],
-                alignment: .leading,
-                spacing: 18
-            ) {
-                metric("Assistant messages", value: summary.assistantMessages.formatted())
-                metric("User messages", value: summary.userMessages.formatted())
-                metric("Sessions", value: summary.sessions.formatted())
-                metric("Observed cost", value: summary.cost.formatted(.currency(code: "USD")))
-                metric("Total tokens", value: summary.totalTokens.formatted(.number.notation(.compactName)))
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 0) {
+                    metric("Assistant messages", value: summary.assistantMessages.formatted())
+                    metricDivider
+                    metric("User messages", value: summary.userMessages.formatted())
+                    metricDivider
+                    metric("Sessions", value: summary.sessions.formatted())
+                    metricDivider
+                    metric("Observed cost", value: summary.cost.formatted(.currency(code: "USD")))
+                    metricDivider
+                    metric("Total tokens", value: summary.totalTokens.formatted(.number.notation(.compactName)))
+                }
+                .frame(minWidth: 720)
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 145, maximum: 230), spacing: 18)],
+                    alignment: .leading,
+                    spacing: 16
+                ) {
+                    metric("Assistant messages", value: summary.assistantMessages.formatted())
+                    metric("User messages", value: summary.userMessages.formatted())
+                    metric("Sessions", value: summary.sessions.formatted())
+                    metric("Observed cost", value: summary.cost.formatted(.currency(code: "USD")))
+                    metric("Total tokens", value: summary.totalTokens.formatted(.number.notation(.compactName)))
+                }
             }
 
             ViewThatFits(in: .horizontal) {
@@ -171,17 +186,25 @@ struct UsageView: View {
     private func metric(_ title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.callout)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Text(value)
-                .font(.title2.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private var metricDivider: some View {
+        Divider()
+            .frame(height: 46)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
     }
 
     private func tokenBreakdown(_ summary: UsageSummary) -> some View {
