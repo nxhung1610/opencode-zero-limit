@@ -2,7 +2,7 @@
 
 ## Platform
 
-macOS only. Native SwiftUI app; minimum macOS 14.
+Aqua (native macOS desktop); minimum macOS 14.
 
 ## Users
 

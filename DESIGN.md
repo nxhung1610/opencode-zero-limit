@@ -15,6 +15,8 @@ The app should follow macOS conventions first: standard window chrome, a `Naviga
 
 - Use a grouped macOS sidebar for Accounts, Usage, Proxies, and Settings.
 - Keep the managed OpenCode status and Start/Stop action in the native toolbar.
+- For Accounts and Proxies, use a restrained in-page list-and-inspector split: select a saved account or proxy task on the left, then keep its state and relevant actions in the detail pane. Do not repeat the global sidebar inside the page.
+- Keep Usage focused on observed totals, token breakdown, and model activity; keep Settings as a single-column native `Form` rather than forcing every page into the inspector pattern.
 - Use `Form` for preferences and configuration; use `GroupBox`, row dividers, and `ContentUnavailableView` for structured content and empty/error states.
 - Preserve generous native window resizing behavior instead of web breakpoints or mobile-specific layouts.
 - Give each view one clear task; prioritize real account/proxy/server status over decorative metrics.
