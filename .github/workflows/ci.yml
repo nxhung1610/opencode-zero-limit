@@ -1,4 +1,4 @@
-name: CI
+name: macOS
 
 on:
   push:
@@ -6,24 +6,16 @@ on:
   pull_request:
 
 jobs:
-  app:
-    runs-on: ubuntu-latest
+  native:
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-
-  contract:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm i -g opencode-ai@1.18.35
-      - run: bash scripts/contract-test.sh
+      - name: Test RelayDockCore and SwiftUI app
+        run: swift test --package-path macOS/RelayDock
+      - name: Build macOS app bundle
+        run: scripts/build-macos-app.sh
+      - name: Validate app bundle
+        run: |
+          plutil -lint build/RelayDock.app/Contents/Info.plist
+          test -x build/RelayDock.app/Contents/MacOS/RelayDock
+          test -s build/RelayDock.app/Contents/Resources/AppIcon.icns
