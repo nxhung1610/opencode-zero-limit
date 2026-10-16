@@ -105,8 +105,14 @@ private extension UIFixturesTests {
                 content: window(try makeModel(mode: .off, proxies: [], tab: .pool))
             ),
             FixtureScenario(
-                name: "import-sheet",
-                size: CGSize(width: 520, height: 370),
+                name: "pool-script-entry",
+                size: windowSize,
+                schemes: [.dark],
+                content: window(try makeModel(mode: .auto, proxies: scriptPool, tab: .pool))
+            ),
+            FixtureScenario(
+                name: "import-sheet-single",
+                size: CGSize(width: 520, height: 440),
                 schemes: bothSchemes,
                 content: AnyView(
                     ProxyImportSheet(model: try makeModel(mode: .off, proxies: mixedPool))
@@ -114,13 +120,27 @@ private extension UIFixturesTests {
                 )
             ),
             FixtureScenario(
-                name: "import-sheet-typed",
-                size: CGSize(width: 520, height: 370),
+                name: "import-sheet-custom",
+                size: CGSize(width: 520, height: 440),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
                         model: try makeModel(mode: .off, proxies: mixedPool),
-                        initialText: "http://proxy.example:8080"
+                        initialScheme: .custom,
+                        initialScript: "const res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;"
+                    )
+                    .background(.background)
+                )
+            ),
+            FixtureScenario(
+                name: "import-sheet-bulk",
+                size: CGSize(width: 520, height: 440),
+                schemes: [.dark],
+                content: AnyView(
+                    ProxyImportSheet(
+                        model: try makeModel(mode: .off, proxies: mixedPool),
+                        initialText: "http://proxy.example:8080\nsocks4a://[2001:db8::1]:1080",
+                        initialMode: .bulk
                     )
                     .background(.background)
                 )
@@ -251,6 +271,25 @@ private extension UIFixturesTests {
                 label: "west.example",
                 url: "https://west.example:8443",
                 health: ProxyHealth(ok: false, checkedAt: 1_760_000_000, error: "Connection refused")
+            ),
+        ]
+    }
+
+    /// A custom JavaScript entry next to a normal URL entry.
+    static var scriptPool: [ProxyEntry] {
+        [
+            ProxyEntry(
+                id: "px_script_rotating",
+                label: "Rotating pool",
+                url: "",
+                script: "const res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;",
+                health: ProxyHealth(ok: true, latencyMs: 128, checkedAt: 1_760_000_000)
+            ),
+            ProxyEntry(
+                id: "px_gateway_east",
+                label: "gateway.example",
+                url: "http://gateway.example:8080",
+                health: ProxyHealth(ok: true, latencyMs: 42, checkedAt: 1_760_000_000)
             ),
         ]
     }
