@@ -2,6 +2,27 @@ import Combine
 import Foundation
 import RelayDockCore
 
+enum ProxyAppTab: String, CaseIterable, Identifiable {
+    case routing
+    case pool
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .routing: "Routing"
+        case .pool: "Proxy Pool"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .routing: "arrow.left.arrow.right"
+        case .pool: "list.bullet"
+        }
+    }
+}
+
 @MainActor
 final class ProxyAppModel: ObservableObject {
     @Published private(set) var state: ProxyState?
@@ -9,6 +30,7 @@ final class ProxyAppModel: ObservableObject {
     @Published private(set) var isTesting = false
     @Published var isManualChooserPresented = false
     @Published private(set) var errorMessage: String?
+    @Published var selectedTab: ProxyAppTab = .routing
 
     private let store: ProxyStore
 
@@ -19,6 +41,14 @@ final class ProxyAppModel: ObservableObject {
     var enabledCount: Int { state?.enabledProxies.count ?? 0 }
     var eligibleCount: Int { state?.autoEligibleProxies.count ?? 0 }
     var manualCandidates: [ProxyEntry] { state?.validEnabledProxies ?? [] }
+
+    /// True when Manual mode can be selected without presenting the chooser.
+    var manualSelectionIsUsable: Bool {
+        guard let state else { return false }
+        return state.manualId.map { id in
+            state.validEnabledProxies.contains(where: { $0.id == id })
+        } ?? false
+    }
 
     func load() {
         do {
@@ -36,18 +66,13 @@ final class ProxyAppModel: ObservableObject {
 
     func selectMode(_ mode: ProxyMode) {
         guard let current = state else { return }
-        if mode == .manual {
-            let currentSelectionIsUsable = current.manualId.map { id in
-                current.validEnabledProxies.contains(where: { $0.id == id })
-            } ?? false
-            guard currentSelectionIsUsable else {
-                if manualCandidates.isEmpty {
-                    errorMessage = "Import or enable a valid proxy before selecting Manual mode."
-                } else {
-                    isManualChooserPresented = true
-                }
-                return
+        if mode == .manual, !manualSelectionIsUsable {
+            if manualCandidates.isEmpty {
+                errorMessage = "Import or enable a valid proxy before selecting Manual mode."
+            } else {
+                isManualChooserPresented = true
             }
+            return
         }
         saveMode(mode, manualID: current.manualId)
     }

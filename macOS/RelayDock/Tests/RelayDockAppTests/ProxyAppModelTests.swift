@@ -49,6 +49,37 @@ struct ProxyAppModelTests {
         #expect(model.state == initial)
     }
 
+    @Test @MainActor func manualSelectionUsabilityTracksEnabledAndValidState() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy.example:8080")
+        let model = ProxyAppModel(store: store)
+        model.load()
+
+        #expect(!model.manualSelectionIsUsable)
+
+        model.selectManualProxy(imported.proxies[0].id)
+        #expect(model.manualSelectionIsUsable)
+
+        model.setEnabled(imported.proxies[0].id, enabled: false)
+        #expect(!model.manualSelectionIsUsable)
+    }
+
+    @Test @MainActor func manualModeSwitchesDirectlyWhenSelectionIsUsable() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy.example:8080")
+        let model = ProxyAppModel(store: store)
+        model.load()
+        model.selectManualProxy(imported.proxies[0].id)
+        model.selectMode(.off)
+
+        model.selectMode(.manual)
+
+        #expect(model.state?.mode == .manual)
+        #expect(!model.isManualChooserPresented)
+    }
+
     private func makeStore() -> (URL, ProxyStore) {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
