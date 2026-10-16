@@ -6,7 +6,8 @@ RelayDock is a compact native SwiftUI utility for managing a local proxy pool an
 
 ## What it provides
 
-- Import and persist HTTP, HTTPS, SOCKS5, and SOCKS5H proxy URLs.
+- Import and persist HTTP, HTTPS, SOCKS4, SOCKS4A, SOCKS5, and SOCKS5H proxy URLs — one at a time or in bulk.
+- Support named custom JavaScript entries that resolve to a proxy each time a consumer launches a child process.
 - Enable, disable, remove, and health-check proxies in the local pool.
 - Save Off, Manual, or Auto policy. Manual and Auto configuration remains fail-closed; invalid or missing routes are not silently changed to Off.
 - Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
@@ -38,9 +39,22 @@ let selectedProxyURL = try proxies.selectForSpawn()
 let childEnvironment = buildOpenCodeProxyEnvironment(proxyURL: selectedProxyURL)
 ```
 
-`selectForSpawn()` returns `nil` only for explicit Off mode. Do not catch a Manual/Auto selection error and continue with `nil`; surface the error and do not launch the child process. Auto may use enabled proxies whose health is unknown, but excludes proxies whose last recorded check failed. The consumer must actually use the returned environment when launching the child and must independently verify its HTTP client's behavior.
+`selectForSpawn()` returns `nil` only for explicit Off mode. Do not catch a Manual/Auto selection error and continue with `nil`; surface the error and do not launch the child process. Auto may use enabled proxies whose health is unknown, but excludes proxies whose last recorded check failed. When the selection is a custom JavaScript entry, `selectForSpawn()` runs the script first; a script error, timeout, or invalid result is thrown so the launch stays fail-closed. The consumer must actually use the returned environment when launching the child and must independently verify its HTTP client's behavior.
 
 Set `RELAYDOCK_CONFIG_DIR` or pass `configDirectory:` to `ProxyStore` to use another configuration directory. The library reuses existing proxy pools and does not migrate or delete user data.
+
+## Custom JavaScript proxies
+
+**Add One → Type → Custom (JS)** stores a named script instead of a fixed URL. The script runs inside `selectForSpawn()` each time a consumer launches a child process, so it can fetch a fresh proxy from a provider API:
+
+```js
+const res = http.get("https://api.example.com/proxy", { "Authorization": "Bearer …" });
+return JSON.parse(res).url; // or a "host:port" string
+```
+
+- Scripts run in a bare JavaScriptCore context: no file, process, or system access. Available APIs: `http.get(url, headers?)` (synchronous HTTP/HTTPS GET, response capped at 256 KB), `btoa`, `atob`, and a no-op `console`. The script must `return` a proxy URL or `host:port`; the value is validated with the same parser as imported URLs.
+- Resolution is fail-closed: a script error, a 10-second timeout, or an invalid result throws `ProxyStoreError.scriptFailed` — the consumer must not launch without a proxy. Health checks run the script first and record a failed check when it errors.
+- Scripts can contain credentials and are stored as written in `<config>/proxies.json` (file permissions 0600). The app masks credentials in resolved previews.
 
 ## Scope
 
