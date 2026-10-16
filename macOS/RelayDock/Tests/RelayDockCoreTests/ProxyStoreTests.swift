@@ -286,6 +286,169 @@ struct ProxyStoreTests {
         #expect(maximum > 1)
     }
 
+    @Test func importsSocks4AndSocks4AProxies() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let state = try store.importProxies("""
+        socks4://proxy-d.example:1080
+        socks4a://[2001:db8::1]:1080
+        SOCKS4://proxy-e.example:1081
+        """)
+
+        #expect(state.proxies.count == 3)
+        #expect(state.proxies.map(\.url) == [
+            "socks4://proxy-d.example:1080",
+            "socks4a://[2001:db8::1]:1080",
+            "SOCKS4://proxy-e.example:1081",
+        ])
+        #expect(state.proxies[1].label == "[2001:db8::1]:1080")
+    }
+
+    @Test func singleAddValidatesDeduplicatesAndPersists() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let state = try store.addProxyURL("socks5://alice:secret@edge.example:1080")
+        #expect(state.proxies.count == 1)
+        #expect(state.proxies[0].url == "socks5://alice:secret@edge.example:1080")
+        #expect(state.proxies[0].label == "edge.example:1080")
+        #expect(try store.load() == state)
+
+        do {
+            _ = try store.addProxyURL("socks5://alice:secret@edge.example:1080")
+            Issue.record("Adding the same proxy twice must be reported")
+        } catch {
+            #expect(error as? ProxyStoreError == .proxyAlreadyExists("edge.example:1080"))
+        }
+
+        for invalid in ["ftp://edge.example:21", "not-a-proxy"] {
+            do {
+                _ = try store.addProxyURL(invalid)
+                Issue.record("Adding \(invalid) must be rejected")
+            } catch {
+                #expect(error as? ProxyStoreError == .invalidSingleProxy)
+            }
+        }
+    }
+
+    @Test func customScriptEntriesResolveAtSpawnTime() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let script = "return \"socks5://127.0.0.1:1080\";"
+        let added = try store.addProxyScript(name: "Local relay", script: script)
+        #expect(added.proxies.count == 1)
+        #expect(added.proxies[0].script == script)
+        #expect(added.proxies[0].url == "")
+        #expect(added.proxies[0].label == "Local relay")
+        #expect(added.proxies[0].id == proxyScriptEntryID(for: script))
+        #expect(try store.load() == added)
+
+        let selected = added.proxies[0]
+        _ = try store.setMode(.manual, manualId: selected.id)
+        #expect(try store.selectForSpawn() == "socks5://127.0.0.1:1080")
+
+        _ = try store.setMode(.auto, manualId: nil)
+        #expect(try store.selectForSpawn(accountID: "account-a") == "socks5://127.0.0.1:1080")
+    }
+
+    @Test func customScriptFailuresFailClosed() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let state = try store.addProxyScript(name: "Broken", script: "throw new Error(\"boom\");")
+        _ = try store.setMode(.manual, manualId: state.proxies[0].id)
+
+        do {
+            _ = try store.selectForSpawn()
+            Issue.record("A failing script must not produce a route")
+        } catch {
+            guard case .scriptFailed(let label, let reason)? = error as? ProxyStoreError else {
+                Issue.record("Expected scriptFailed, got \(error)")
+                return
+            }
+            #expect(label == "Broken")
+            #expect(reason.contains("boom"))
+        }
+
+        _ = try store.setMode(.auto, manualId: nil)
+        do {
+            _ = try store.selectForSpawn()
+            Issue.record("Auto mode must fail closed when the only script fails")
+        } catch {
+            #expect(error is ProxyStoreError)
+        }
+    }
+
+    @Test func customScriptEntriesValidateNameAndScriptAndDeduplicate() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try store.addProxyScript(name: "   ", script: "return \"http://edge.example:8080\";")
+            Issue.record("A nameless script must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .scriptNameRequired)
+        }
+        do {
+            _ = try store.addProxyScript(name: "Empty", script: "   ")
+            Issue.record("An empty script must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .scriptEmpty)
+        }
+
+        let script = "return \"http://edge.example:8080\";"
+        _ = try store.addProxyScript(name: "First", script: script)
+        do {
+            _ = try store.addProxyScript(name: "Second", script: script)
+            Issue.record("Duplicate scripts must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .proxyAlreadyExists("This script"))
+        }
+    }
+
+    @Test func customScriptEntriesCountAsValidDefinitions() {
+        let proxies = [
+            ProxyEntry(id: "script", label: "Script", url: "", script: "return \"http://edge.example:8080\";"),
+            ProxyEntry(id: "blank", label: "Blank", url: "", script: "   "),
+            ProxyEntry(id: "invalid-url", label: "Invalid", url: "ftp://invalid.example:21"),
+        ]
+        let state = ProxyState(mode: .auto, proxies: proxies)
+
+        #expect(state.validEnabledProxies.map(\.id) == ["script"])
+        #expect(state.autoEligibleProxies.map(\.id) == ["script"])
+    }
+
+    @Test func scriptHealthChecksResolveTheScriptBeforeChecking() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = ScriptURLRecorder()
+        let store = ProxyStore(configDirectory: directory, healthChecker: { url in await recorder.check(url) })
+        _ = try store.addProxyScript(name: "Custom", script: "return \"socks5://127.0.0.1:1080\";")
+        _ = try store.addProxyURL("http://proxy-a.example:8080")
+
+        let checked = try await store.checkAll()
+
+        let urls = await recorder.checkedURLs()
+        #expect(urls.contains("socks5://127.0.0.1:1080"))
+        #expect(urls.contains("http://proxy-a.example:8080"))
+        #expect(checked.proxies.first(where: { $0.script != nil })?.health?.ok == true)
+    }
+
+    @Test func failingScriptsRecordAFailedHealthCheck() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory, healthChecker: { _ in ProxyHealth(ok: true, checkedAt: 1) })
+        _ = try store.addProxyScript(name: "Broken", script: "throw new Error(\"boom\");")
+
+        let checked = try await store.checkAll()
+
+        let health = checked.proxies[0].health
+        #expect(health?.ok == false)
+        #expect(health?.error?.contains("boom") == true)
+    }
+
     private func makeStore() -> (URL, ProxyStore) {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         return (directory, ProxyStore(configDirectory: directory))
@@ -330,5 +493,18 @@ private actor ProxyCheckConcurrencyTracker {
 
     func maximumConcurrentChecks() -> Int {
         maximumActiveChecks
+    }
+}
+
+private actor ScriptURLRecorder {
+    private var urls: [String] = []
+
+    func check(_ url: String) async -> ProxyHealth {
+        urls.append(url)
+        return ProxyHealth(ok: true, checkedAt: 1)
+    }
+
+    func checkedURLs() -> [String] {
+        urls
     }
 }

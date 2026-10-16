@@ -38,22 +38,48 @@ public struct ProxyEntry: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var label: String
     public var url: String
+    /// A custom JavaScript entry. When present, consumers resolve the proxy by
+    /// running this script at spawn time instead of using `url`.
+    public var script: String?
     public var enabled: Bool
     public var health: ProxyHealth?
 
-    public init(id: String, label: String, url: String, enabled: Bool = true, health: ProxyHealth? = nil) {
+    public init(id: String, label: String, url: String, script: String? = nil, enabled: Bool = true, health: ProxyHealth? = nil) {
         self.id = id
         self.label = label
         self.url = url
+        self.script = script
         self.enabled = enabled
         self.health = health
     }
 
+    /// A custom script cannot be validated without running it; it counts as
+    /// valid while it is non-empty. URL entries must parse with the shared
+    /// import parser.
+    public var hasValidDefinition: Bool {
+        if let script { return !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return parseProxyImportLine(url) == url
+    }
+
+    public var isCustomScript: Bool { script != nil }
+
+    /// Identifies the definition a health check ran against.
+    var checkFingerprint: String { script ?? url }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: ProxyCodingKey.self)
         id = try container.decode(String.self, forKey: ProxyCodingKey("id"))
-        url = try container.decode(String.self, forKey: ProxyCodingKey("url"))
-        label = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("label")) ?? proxyLabel(for: url)
+        script = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("script"))
+        url = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("url")) ?? ""
+        if script == nil, url.isEmpty {
+            throw DecodingError.dataCorruptedError(
+                forKey: ProxyCodingKey("url"),
+                in: container,
+                debugDescription: "A proxy entry must define a URL or a script."
+            )
+        }
+        label = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("label"))
+            ?? (script != nil ? "Custom script" : proxyLabel(for: url))
         enabled = try container.decodeIfPresent(Bool.self, forKey: ProxyCodingKey("enabled")) ?? true
         health = try container.decodeIfPresent(ProxyHealth.self, forKey: ProxyCodingKey("health"))
     }
@@ -78,8 +104,10 @@ public struct ProxyState: Codable, Equatable, Sendable {
         proxies.filter(\.enabled)
     }
 
+    /// Enabled entries with a valid definition: a parseable URL, or a
+    /// non-empty custom script.
     public var validEnabledProxies: [ProxyEntry] {
-        enabledProxies.filter { parseProxyImportLine($0.url) == $0.url }
+        enabledProxies.filter(\.hasValidDefinition)
     }
 
     /// Auto-eligible proxies include unchecked entries, but exclude entries with a known failed check.
@@ -127,9 +155,14 @@ private struct ProxyCodingKey: CodingKey {
 public enum ProxyStoreError: LocalizedError, Equatable {
     case unreadable(String)
     case invalidImportLines([Int])
+    case invalidSingleProxy
+    case scriptNameRequired
+    case scriptEmpty
+    case proxyAlreadyExists(String)
     case noManualSelection
     case manualSelectionDisabled(String)
     case invalidProxyConfiguration(String)
+    case scriptFailed(String, String)
     case autoHasNoEnabledProxy
     case autoHasNoValidProxy
     case autoHasNoHealthyProxy
@@ -138,10 +171,19 @@ public enum ProxyStoreError: LocalizedError, Equatable {
         switch self {
         case .unreadable(let message): "Cannot read proxies.json: \(message)"
         case .invalidImportLines(let lines):
-            "Invalid proxy URL on line\(lines.count == 1 ? "" : "s") \(lines.map(String.init).joined(separator: ", ")). Fix the URL and try again. Supported schemes: http, https, socks5, socks5h; host:port is also accepted."
+            "Invalid proxy URL on line\(lines.count == 1 ? "" : "s") \(lines.map(String.init).joined(separator: ", ")). Fix the URL and try again. Supported schemes: http, https, socks4, socks4a, socks5, socks5h; host:port is also accepted."
+        case .invalidSingleProxy:
+            "Not a valid proxy URL. Supported schemes: http, https, socks4, socks4a, socks5, socks5h; host:port is also accepted."
+        case .scriptNameRequired:
+            "Give this script a name so it is recognizable in the pool."
+        case .scriptEmpty:
+            "Enter JavaScript that returns a proxy URL or host:port."
+        case .proxyAlreadyExists(let label):
+            "\(label) is already in the pool."
         case .noManualSelection: "No proxy is selected for manual mode. Choose a proxy, or switch the proxy mode to Off."
         case .manualSelectionDisabled(let label): "The selected proxy (\(label)) is disabled. Enable it or choose another enabled proxy."
         case .invalidProxyConfiguration(let label): "The selected proxy (\(label)) has an invalid or unsupported URL. Fix its configuration before routing OpenCode."
+        case .scriptFailed(let label, let reason): "\(label) could not resolve a proxy. \(reason)"
         case .autoHasNoEnabledProxy: "Auto mode needs at least one enabled proxy. Enable a proxy, or switch the proxy mode to Off."
         case .autoHasNoValidProxy: "Auto mode has no enabled proxy with a valid supported URL. Fix the proxy pool, or switch the proxy mode to Off."
         case .autoHasNoHealthyProxy: "No enabled proxy passed its last test. Test the pool again, enable a proxy, or switch the proxy mode to Off."
@@ -220,6 +262,34 @@ public struct ProxyStore: Sendable {
         return try save(state)
     }
 
+    /// Adds a single URL entry. The input goes through the same parser as bulk
+    /// import lines, so a full URL or host:port is accepted.
+    @discardableResult
+    public func addProxyURL(_ input: String) throws -> ProxyState {
+        guard let url = parseProxyImportLine(input) else { throw ProxyStoreError.invalidSingleProxy }
+        var state = try load()
+        guard !state.proxies.contains(where: { $0.id == proxyEntryID(for: url) || $0.url == url }) else {
+            throw ProxyStoreError.proxyAlreadyExists(proxyLabel(for: url))
+        }
+        state.proxies.append(ProxyEntry(id: proxyEntryID(for: url), label: proxyLabel(for: url), url: url))
+        return try save(state)
+    }
+
+    /// Adds a custom JavaScript entry. The script is stored as written and runs
+    /// only when a consumer selects a route.
+    @discardableResult
+    public func addProxyScript(name: String, script: String) throws -> ProxyState {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { throw ProxyStoreError.scriptNameRequired }
+        guard !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProxyStoreError.scriptEmpty }
+        var state = try load()
+        guard !state.proxies.contains(where: { $0.id == proxyScriptEntryID(for: script) || $0.script == script }) else {
+            throw ProxyStoreError.proxyAlreadyExists("This script")
+        }
+        state.proxies.append(ProxyEntry(id: proxyScriptEntryID(for: script), label: trimmedName, url: "", script: script))
+        return try save(state)
+    }
+
     @discardableResult
     public func remove(_ id: String) throws -> ProxyState {
         var state = try load()
@@ -243,7 +313,7 @@ public struct ProxyStore: Sendable {
         if mode == .manual {
             guard let selectedProxy else { throw ProxyStoreError.noManualSelection }
             guard selectedProxy.enabled else { throw ProxyStoreError.manualSelectionDisabled(selectedProxy.label) }
-            guard parseProxyImportLine(selectedProxy.url) == selectedProxy.url else {
+            guard selectedProxy.hasValidDefinition else {
                 throw ProxyStoreError.invalidProxyConfiguration(selectedProxy.label)
             }
         }
@@ -256,19 +326,18 @@ public struct ProxyStore: Sendable {
     public func checkAll() async throws -> ProxyState {
         let initialState = try load()
         let entries = initialState.proxies.filter(\.enabled)
-        let checkedURLs = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.url) })
-        let healthChecker = self.healthChecker
+        let fingerprints = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.checkFingerprint) })
         let results = await withTaskGroup(of: (String, ProxyHealth).self) { group in
             var iterator = entries.makeIterator()
             for _ in 0..<min(Self.maxConcurrentHealthChecks, entries.count) {
                 guard let entry = iterator.next() else { break }
-                group.addTask { (entry.id, await healthChecker(entry.url)) }
+                group.addTask { await self.checkEntry(entry) }
             }
             var checked: [String: ProxyHealth] = [:]
             while let (id, health) = await group.next() {
                 checked[id] = health
                 if let entry = iterator.next() {
-                    group.addTask { (entry.id, await healthChecker(entry.url)) }
+                    group.addTask { await self.checkEntry(entry) }
                 }
             }
             return checked
@@ -278,7 +347,7 @@ public struct ProxyStore: Sendable {
         var latestState = try load()
         for index in latestState.proxies.indices {
             let entry = latestState.proxies[index]
-            guard checkedURLs[entry.id] == entry.url,
+            guard fingerprints[entry.id] == entry.checkFingerprint,
                   let result = results[entry.id] else { continue }
             latestState.proxies[index].health = result
         }
@@ -294,10 +363,10 @@ public struct ProxyStore: Sendable {
                 throw ProxyStoreError.noManualSelection
             }
             guard selected.enabled else { throw ProxyStoreError.manualSelectionDisabled(selected.label) }
-            guard parseProxyImportLine(selected.url) == selected.url else {
+            guard selected.hasValidDefinition else {
                 throw ProxyStoreError.invalidProxyConfiguration(selected.label)
             }
-            return selected.url
+            return try resolveSpawnURL(selected)
         }
 
         let enabled = state.enabledProxies
@@ -307,14 +376,50 @@ public struct ProxyStore: Sendable {
         let usable = state.autoEligibleProxies
         guard !usable.isEmpty else { throw ProxyStoreError.autoHasNoHealthyProxy }
         if let boundID = state.bindings[accountID], let bound = usable.first(where: { $0.id == boundID }) {
-            return bound.url
+            return try resolveSpawnURL(bound)
         }
         let usedIDs = Set(state.bindings.values)
         let chosen = usable.first(where: { !usedIDs.contains($0.id) }) ?? usable[0]
         state.bindings[accountID] = chosen.id
         // A failed sticky-binding write must not turn an already-selected proxy into a direct launch.
         _ = try? save(state)
-        return chosen.url
+        return try resolveSpawnURL(chosen)
+    }
+
+    /// Turns a selected entry into the concrete proxy URL for the child
+    /// process. Custom scripts run here; any failure keeps the launch
+    /// fail-closed instead of silently going direct.
+    private func resolveSpawnURL(_ entry: ProxyEntry) throws -> String {
+        if let script = entry.script {
+            do {
+                return try ProxyScriptRunner.resolve(script)
+            } catch {
+                throw ProxyStoreError.scriptFailed(entry.label, error.localizedDescription)
+            }
+        }
+        guard parseProxyImportLine(entry.url) == entry.url else {
+            throw ProxyStoreError.invalidProxyConfiguration(entry.label)
+        }
+        return entry.url
+    }
+
+    /// Runs one health check. Custom scripts resolve to a concrete URL first;
+    /// a script failure is recorded as a failed check.
+    private func checkEntry(_ entry: ProxyEntry) async -> (String, ProxyHealth) {
+        guard let script = entry.script else {
+            return (entry.id, await healthChecker(entry.url))
+        }
+        do {
+            let resolved = try ProxyScriptRunner.resolve(script)
+            return (entry.id, await healthChecker(resolved))
+        } catch {
+            return (entry.id, ProxyHealth(
+                ok: false,
+                latencyMs: nil,
+                checkedAt: Date().timeIntervalSince1970 * 1_000,
+                error: error.localizedDescription
+            ))
+        }
     }
 }
 
@@ -331,7 +436,7 @@ public func parseProxyImportLine(_ value: String) -> String? {
     }
     guard let components = URLComponents(string: candidate),
           let scheme = components.scheme?.lowercased(),
-          ["http", "https", "socks5", "socks5h"].contains(scheme),
+          ["http", "https", "socks4", "socks4a", "socks5", "socks5h"].contains(scheme),
           let host = components.host, !host.isEmpty,
           let port = components.port, (1...65_535).contains(port),
           components.url != nil else { return nil }
@@ -341,6 +446,10 @@ public func parseProxyImportLine(_ value: String) -> String? {
 public func proxyEntryID(for url: String) -> String {
     let digest = SHA256.hash(data: Data(url.utf8))
     return "px_" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+}
+
+public func proxyScriptEntryID(for script: String) -> String {
+    proxyEntryID(for: "relaydock-script:" + script)
 }
 
 public func proxyLabel(for url: String) -> String {
