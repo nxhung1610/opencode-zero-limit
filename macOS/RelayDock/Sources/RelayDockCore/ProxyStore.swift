@@ -459,10 +459,15 @@ public func proxyLabel(for url: String) -> String {
 }
 
 public func maskedProxyURL(_ url: String) -> String {
-    guard var components = URLComponents(string: url), components.user != nil || components.password != nil else { return url }
-    components.user = "•••"
-    components.password = nil
-    return components.string ?? proxyLabel(for: url)
+    guard let schemeRange = url.range(of: "://") else { return url }
+    let rest = String(url[schemeRange.upperBound...])
+    // The authority ends at the first path, query, or fragment delimiter.
+    let authorityEnd = rest.firstIndex { "/?#".contains($0) } ?? rest.endIndex
+    let authority = rest[..<authorityEnd]
+    guard let at = authority.range(of: "@", options: .backwards) else { return url }
+    // Built by hand instead of via URLComponents, which would percent-encode
+    // the mask into %E2%80%A2 bullets.
+    return String(url[..<schemeRange.upperBound]) + "•••@" + authority[at.upperBound...] + rest[authorityEnd...]
 }
 
 public func checkProxy(_ proxyURL: String) async -> ProxyHealth {
