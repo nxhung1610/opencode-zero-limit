@@ -83,6 +83,8 @@ private struct FieldSurface<Content: View>: View {
 
 struct ProxyImportSheet: View {
     @ObservedObject var model: ProxyAppModel
+    /// Non-nil when the sheet edits an existing custom script entry in place.
+    private let editing: ProxyEntry?
     @Environment(\.dismiss) private var dismiss
     @State private var mode: ProxyImportMode
     @State private var text: String
@@ -97,8 +99,8 @@ struct ProxyImportSheet: View {
     @State private var validationError: String?
     @FocusState private var focusedField: SheetFocus?
 
-    /// Initial values exist for offscreen fixtures; the app always opens the
-    /// sheet empty in Add One mode.
+    /// Initial values exist for offscreen fixtures and for the Edit Script
+    /// sheet; the add flow itself always opens empty in Add One mode.
     struct Prefill {
         var text = ""
         var mode = ProxyImportMode.single
@@ -110,16 +112,19 @@ struct ProxyImportSheet: View {
         var script = ""
     }
 
-    init(model: ProxyAppModel, prefill: Prefill = Prefill()) {
+    init(model: ProxyAppModel, prefill: Prefill = Prefill(), editing: ProxyEntry? = nil) {
         self.model = model
-        _mode = State(initialValue: prefill.mode)
+        let editable = editing.flatMap { $0.script != nil ? $0 : nil }
+        self.editing = editable
+        _mode = State(initialValue: editable == nil ? prefill.mode : .single)
         _text = State(initialValue: prefill.text)
-        _scheme = State(initialValue: prefill.scheme)
+        _scheme = State(initialValue: editable == nil ? prefill.scheme : .custom)
         _host = State(initialValue: prefill.host)
         _port = State(initialValue: prefill.port)
         _username = State(initialValue: prefill.username)
         _password = State(initialValue: prefill.password)
-        _script = State(initialValue: prefill.script)
+        _scriptName = State(initialValue: editable?.label ?? "")
+        _script = State(initialValue: editable?.script ?? prefill.script)
     }
 
     var body: some View {
@@ -129,16 +134,18 @@ struct ProxyImportSheet: View {
                 .padding(.top, 20)
                 .padding(.bottom, 10)
 
-            Picker("Input Mode", selection: $mode) {
-                ForEach(ProxyImportMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            if !isEditing {
+                Picker("Input Mode", selection: $mode) {
+                    ForEach(ProxyImportMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .controlSize(.large)
+                .labelsHidden()
+                .padding(.horizontal, 20)
+                .padding(.bottom, 6)
             }
-            .pickerStyle(.segmented)
-            .controlSize(.large)
-            .labelsHidden()
-            .padding(.horizontal, 20)
-            .padding(.bottom, 6)
 
             Form {
                 if mode == .single {
@@ -172,15 +179,24 @@ struct ProxyImportSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Add Proxies")
+            Text(isEditing ? "Edit Script" : "Add Proxies")
                 .font(.title2.weight(.semibold))
-            Text(mode == .single
-                 ? "Add one proxy by type, or write a custom script."
-                 : "Paste one URL per line. Supports HTTP, HTTPS, SOCKS4, SOCKS4A, SOCKS5, and SOCKS5H.")
+            Text(headerSubtitle)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    private var headerSubtitle: String {
+        if isEditing {
+            return "Update the name or script. The next launch uses the new version."
+        }
+        return mode == .single
+            ? "Add one proxy by type, or write a custom script."
+            : "Paste one URL per line. Supports HTTP, HTTPS, SOCKS4, SOCKS4A, SOCKS5, and SOCKS5H."
+    }
+
+    private var isEditing: Bool { editing != nil }
 
     // MARK: - Add One
 
@@ -469,9 +485,10 @@ struct ProxyImportSheet: View {
     }
 
     private var primaryButtonTitle: String {
+        if isEditing { return "Save" }
         switch mode {
-        case .single: scheme.isCustom ? "Add Script" : "Add"
-        case .bulk: "Import"
+        case .single: return scheme.isCustom ? "Add Script" : "Add"
+        case .bulk: return "Import"
         }
     }
 
@@ -490,6 +507,14 @@ struct ProxyImportSheet: View {
     }
 
     private func submit() {
+        if let editing {
+            if let error = model.updateProxyScript(id: editing.id, name: scriptName, script: script) {
+                validationError = error
+            } else {
+                dismiss()
+            }
+            return
+        }
         switch mode {
         case .bulk:
             if let error = model.importProxies(text) {

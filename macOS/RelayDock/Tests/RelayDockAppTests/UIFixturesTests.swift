@@ -171,6 +171,18 @@ private extension UIFixturesTests {
                 )
             ),
             FixtureScenario(
+                name: "import-sheet-edit-script",
+                size: CGSize(width: 520, height: 520),
+                schemes: [.dark],
+                content: AnyView(
+                    ProxyImportSheet(
+                        model: try makeModel(mode: .off, proxies: scriptPool),
+                        editing: scriptPool[0]
+                    )
+                    .background(.background)
+                )
+            ),
+            FixtureScenario(
                 name: "panel-auto",
                 size: nil,
                 schemes: bothSchemes,

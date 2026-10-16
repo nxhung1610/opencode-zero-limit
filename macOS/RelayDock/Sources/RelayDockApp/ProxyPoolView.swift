@@ -7,6 +7,7 @@ struct ProxyPoolView: View {
     @State private var expandedID: String?
     @State private var showImport = false
     @State private var removalTarget: ProxyEntry?
+    @State private var editTarget: ProxyEntry?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,7 +75,8 @@ struct ProxyPoolView: View {
                                 proxy: proxy,
                                 model: model,
                                 expandedID: $expandedID,
-                                removalTarget: $removalTarget
+                                removalTarget: $removalTarget,
+                                editTarget: $editTarget
                             )
                             if proxy.id != proxies.last?.id {
                                 Divider().padding(.leading, 30)
@@ -89,6 +91,9 @@ struct ProxyPoolView: View {
         }
         .sheet(isPresented: $showImport) {
             ProxyImportSheet(model: model)
+        }
+        .sheet(item: $editTarget) { entry in
+            ProxyImportSheet(model: model, editing: entry)
         }
         .confirmationDialog(
             "Remove \(removalTarget?.label ?? "proxy")?",
@@ -114,6 +119,7 @@ private struct ProxyPoolRow: View {
     @ObservedObject var model: ProxyAppModel
     @Binding var expandedID: String?
     @Binding var removalTarget: ProxyEntry?
+    @Binding var editTarget: ProxyEntry?
 
     private var isExpanded: Bool { expandedID == proxy.id }
     private var currentProxy: ProxyEntry {
@@ -176,6 +182,13 @@ private struct ProxyPoolRow: View {
                 .accessibilityLabel("Enable \(proxy.label)")
 
                 Menu {
+                    if proxy.isCustomScript {
+                        Button {
+                            editTarget = proxy
+                        } label: {
+                            Label("Edit Script…", systemImage: "pencil")
+                        }
+                    }
                     if let script = proxy.script {
                         Button {
                             NSPasteboard.general.clearContents()
