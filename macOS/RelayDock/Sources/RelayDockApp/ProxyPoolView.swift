@@ -133,10 +133,16 @@ private struct ProxyPoolRow: View {
 
                 Spacer(minLength: 8)
 
-                Text(healthSummary)
-                    .font(.caption)
-                    .foregroundStyle(healthColor)
-                    .lineLimit(1)
+                Text(ProxyStatus.text(
+                    for: currentProxy,
+                    mode: model.state?.mode ?? .off,
+                    isTesting: model.isTesting
+                ))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(ProxyStatus.color(for: currentProxy, isTesting: model.isTesting))
+                .lineLimit(1)
+                .frame(minWidth: 96, alignment: .trailing)
 
                 Toggle(
                     "Enabled",
@@ -206,7 +212,11 @@ private struct ProxyPoolRow: View {
 
     @ViewBuilder
     private var healthSymbol: some View {
-        if let health = currentProxy.health {
+        if !currentProxy.enabled {
+            Image(systemName: "circle")
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Disabled")
+        } else if let health = currentProxy.health {
             Image(systemName: health.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .foregroundStyle(health.ok ? Color.green : Color.orange)
                 .accessibilityLabel(health.ok ? "Last test passed" : "Last test failed")
@@ -217,25 +227,13 @@ private struct ProxyPoolRow: View {
         }
     }
 
-    private var healthSummary: String {
-        guard let health = currentProxy.health else { return "Not tested" }
-        guard health.ok else { return "Failed" }
-        if let latency = health.latencyMs { return "Passed · \(Int(latency.rounded())) ms" }
-        return "Passed"
-    }
-
-    private var healthColor: Color {
-        guard let health = currentProxy.health else { return .secondary }
-        return health.ok ? .secondary : .orange
-    }
-
     private var proxyScheme: String {
         URLComponents(string: proxy.url)?.scheme?.uppercased() ?? "Unknown"
     }
 
     private var healthDetail: String {
         guard let health = currentProxy.health else { return "Not tested" }
-        let result = health.ok ? healthSummary : "Failed · \(health.error ?? "check failed")"
+        let result = health.ok ? ProxyStatus.healthSummary(for: currentProxy) : "Failed · \(health.error ?? "check failed")"
         guard health.checkedAt > 1_000_000_000_000 else { return result }
         let date = Date(timeIntervalSince1970: health.checkedAt / 1_000)
         let relative = RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())

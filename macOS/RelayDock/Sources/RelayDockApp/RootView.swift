@@ -114,9 +114,11 @@ private struct ManualProxyChooser: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(proxy.label)
                             .foregroundStyle(.primary)
-                        Text(proxyLabel(for: proxy.url))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
+                        if proxyLabel(for: proxy.url) != proxy.label {
+                            Text(proxyLabel(for: proxy.url))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
