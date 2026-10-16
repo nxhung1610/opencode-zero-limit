@@ -21,6 +21,7 @@ struct ProxyStoreTests {
         #expect(state.proxies[0].url.contains("alice:secret"))
         #expect(maskedProxyURL(state.proxies[0].url).contains("proxy-a.example:8080"))
         #expect(!maskedProxyURL(state.proxies[0].url).contains("secret"))
+        #expect(maskedProxyURL(state.proxies[0].url) == "http://•••@proxy-a.example:8080")
         #expect(state.proxies[0].id == proxyEntryID(for: state.proxies[0].url))
     }
 
