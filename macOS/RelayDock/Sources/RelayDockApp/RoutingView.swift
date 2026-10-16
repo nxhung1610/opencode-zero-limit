@@ -180,6 +180,7 @@ struct RoutingView: View {
     /// The picker reads "host:port" once when the label already is that
     /// authority, and keeps "label · detail" for custom labels.
     private func manualCandidateTitle(_ proxy: ProxyEntry) -> String {
+        guard !proxy.isCustomScript else { return proxy.label }
         let detail = proxyLabel(for: proxy.url)
         if detail == proxy.label { return proxy.label }
         if detail.hasPrefix(proxy.label), detail.dropFirst(proxy.label.count).hasPrefix(":") {

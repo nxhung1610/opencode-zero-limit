@@ -113,6 +113,28 @@ final class ProxyAppModel: ObservableObject {
         }
     }
 
+    /// Adds one proxy URL. Returns nil on success, or a message while preserving the caller's input.
+    func addProxyURL(_ input: String) -> String? {
+        do {
+            state = try store.addProxyURL(input)
+            errorMessage = nil
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Adds a custom JavaScript entry. Returns nil on success, or a message while preserving the caller's input.
+    func addProxyScript(name: String, script: String) -> String? {
+        do {
+            state = try store.addProxyScript(name: name, script: script)
+            errorMessage = nil
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func testAll() async {
         guard !isTesting, state != nil else { return }
         isTesting = true

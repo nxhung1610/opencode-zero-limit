@@ -132,10 +132,17 @@ private struct ProxyPoolRow: View {
                             Text(proxy.label)
                                 .font(.body.weight(.medium))
                                 .foregroundStyle(.primary)
-                            Text(proxyLabel(for: proxy.url))
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if proxy.isCustomScript {
+                                Text("Custom script · resolves at launch")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            } else {
+                                Text(proxyLabel(for: proxy.url))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                     }
                     .contentShape(Rectangle())
@@ -169,11 +176,20 @@ private struct ProxyPoolRow: View {
                 .accessibilityLabel("Enable \(proxy.label)")
 
                 Menu {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(maskedProxyURL(proxy.url), forType: .string)
-                    } label: {
-                        Label("Copy Masked URL", systemImage: "doc.on.doc")
+                    if let script = proxy.script {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(script, forType: .string)
+                        } label: {
+                            Label("Copy Script", systemImage: "doc.on.doc")
+                        }
+                    } else {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(maskedProxyURL(proxy.url), forType: .string)
+                        } label: {
+                            Label("Copy Masked URL", systemImage: "doc.on.doc")
+                        }
                     }
                     Button(role: .destructive) {
                         removalTarget = proxy
@@ -209,14 +225,14 @@ private struct ProxyPoolRow: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Divider()
                     HStack(spacing: 24) {
-                        LabeledContent("Protocol", value: proxyScheme)
+                        LabeledContent("Protocol", value: proxy.isCustomScript ? "Custom (JS)" : proxyScheme)
                         LabeledContent("Last test", value: healthDetail)
                     }
 
                     if model.state?.mode == .manual, model.state?.manualId == proxy.id {
                         Label("Selected for Manual", systemImage: "checkmark.circle")
                             .foregroundStyle(.secondary)
-                    } else if currentProxy.enabled, parseProxyImportLine(currentProxy.url) == currentProxy.url {
+                    } else if currentProxy.enabled, currentProxy.hasValidDefinition {
                         Button("Use as Manual") { model.selectManualProxy(proxy.id) }
                             .buttonStyle(.link)
                     }
@@ -268,78 +284,4 @@ private struct ProxyPoolRow: View {
     }
 }
 
-struct ProxyImportSheet: View {
-    @ObservedObject var model: ProxyAppModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var text: String
-    @State private var validationError: String?
 
-    /// `initialText` exists for offscreen fixtures; the app always opens the sheet empty.
-    init(model: ProxyAppModel, initialText: String = "") {
-        self.model = model
-        _text = State(initialValue: initialText)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Import Proxies")
-                .font(.title2.weight(.semibold))
-            Text("Paste one URL per line. Supports HTTP, HTTPS, SOCKS5, and SOCKS5H.")
-                .foregroundStyle(.secondary)
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $text)
-                    .font(.system(.body, design: .monospaced))
-                    .accessibilityLabel("Proxy URLs, one per line")
-                if text.isEmpty {
-                    // `verbatim` keeps the sample URLs plain — the default Text
-                    // init auto-links them into a blue clickable style.
-                    // `top` aligns the hint with where the editor draws real text.
-                    Text(verbatim: "http://proxy.example:8080\nsocks5h://proxy.example:1080")
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 5)
-                        .padding(.top, 1)
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-            }
-
-            if let validationError {
-                Label(validationError, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack {
-                Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Text("Cancel")
-                        .padding(.vertical, 6)
-                }
-                .keyboardShortcut(.cancelAction)
-                Button {
-                    if let error = model.importProxies(text) {
-                        validationError = error
-                    } else {
-                        dismiss()
-                    }
-                } label: {
-                    Text("Import")
-                        .padding(.vertical, 6)
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 520, height: 370)
-        .onChange(of: text) { _, _ in validationError = nil }
-    }
-}
