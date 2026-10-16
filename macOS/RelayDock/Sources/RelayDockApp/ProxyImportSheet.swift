@@ -48,6 +48,39 @@ private enum ScriptTestState: Equatable {
     case failed(String)
 }
 
+/// Focus targets for the sheet's editable surfaces, so each surface can draw
+/// its own focus ring.
+private enum SheetFocus: Hashable {
+    case name
+    case host
+    case port
+    case username
+    case password
+    case script
+    case bulk
+}
+
+/// The shared look for every editable control: one corner radius, one border,
+/// and generous padding, so fields stay uniform across modes and appearances.
+private struct FieldSurface<Content: View>: View {
+    var focused = false
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        focused ? Color.accentColor : Color(nsColor: .separatorColor),
+                        lineWidth: focused ? 2 : 1
+                    )
+            }
+    }
+}
+
 struct ProxyImportSheet: View {
     @ObservedObject var model: ProxyAppModel
     @Environment(\.dismiss) private var dismiss
@@ -62,6 +95,7 @@ struct ProxyImportSheet: View {
     @State private var script: String
     @State private var scriptTest: ScriptTestState = .idle
     @State private var validationError: String?
+    @FocusState private var focusedField: SheetFocus?
 
     /// Initial values exist for offscreen fixtures; the app always opens the
     /// sheet empty in Add One mode.
@@ -93,7 +127,7 @@ struct ProxyImportSheet: View {
             header
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
-                .padding(.bottom, 12)
+                .padding(.bottom, 10)
 
             Picker("Input Mode", selection: $mode) {
                 ForEach(ProxyImportMode.allCases) { mode in
@@ -101,6 +135,7 @@ struct ProxyImportSheet: View {
                 }
             }
             .pickerStyle(.segmented)
+            .controlSize(.large)
             .labelsHidden()
             .padding(.horizontal, 20)
             .padding(.bottom, 6)
@@ -125,10 +160,10 @@ struct ProxyImportSheet: View {
 
             footer
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
+                .padding(.top, 10)
                 .padding(.bottom, 16)
         }
-        .frame(width: 520, height: 470)
+        .frame(width: 520, height: 520)
         .onChange(of: mode) { validationError = nil; scriptTest = .idle }
         .onChange(of: text) { validationError = nil }
         .onChange(of: scheme) { validationError = nil; scriptTest = .idle }
@@ -153,18 +188,24 @@ struct ProxyImportSheet: View {
     private var singleForm: some View {
         if scheme.isCustom {
             Section {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
                         fieldLabel("Name")
-                        TextField("Name", text: $scriptName, prompt: Text("e.g. Rotating pool"))
-                            .labelsHidden()
-                            .textFieldStyle(.roundedBorder)
+                        FieldSurface(focused: focusedField == .name) {
+                            TextField("Name", text: $scriptName, prompt: Text("e.g. Rotating pool"))
+                                .textFieldStyle(.plain)
+                                .labelsHidden()
+                                .focused($focusedField, equals: .name)
+                                .focusEffectDisabled()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = .name }
                     }
                     scriptEditor
                     testScriptRow
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             } footer: {
                 Text("Available: http.get(url, headers?), btoa, atob, console. No file or process access. The script must return a value.")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -172,54 +213,91 @@ struct ProxyImportSheet: View {
             }
         } else {
             Section {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     HStack(spacing: 10) {
                         fieldLabel("Type")
-                        Spacer(minLength: 10)
-                        Picker("Type", selection: $scheme) {
-                            ForEach(ProxyInputScheme.allCases) { scheme in
-                                Text(scheme.title).tag(scheme)
+                        FieldSurface {
+                            Menu {
+                                ForEach(ProxyInputScheme.allCases) { option in
+                                    Button(option.title) {
+                                        scheme = option
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(scheme.title)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
                             }
+                            .menuStyle(.button)
+                            .buttonStyle(.plain)
+                            .menuIndicator(.hidden)
                         }
-                        .labelsHidden()
-                        .fixedSize(horizontal: false, vertical: true)
                     }
                     HStack(spacing: 10) {
                         fieldLabel("Host")
-                        TextField("Host", text: $host, prompt: Text("proxy.example, 10.0.0.1, or 2001:db8::1"))
-                            .labelsHidden()
-                            .textFieldStyle(.roundedBorder)
+                        FieldSurface(focused: focusedField == .host) {
+                            TextField("Host", text: $host, prompt: Text("proxy.example, 10.0.0.1, or 2001:db8::1"))
+                                .textFieldStyle(.plain)
+                                .labelsHidden()
+                                .focused($focusedField, equals: .host)
+                                .focusEffectDisabled()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = .host }
                     }
                     HStack(spacing: 10) {
                         fieldLabel("Port")
-                        TextField("Port", text: $port, prompt: Text("1080"))
-                            .labelsHidden()
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 84)
+                        FieldSurface(focused: focusedField == .port) {
+                            TextField("Port", text: $port, prompt: Text("1080"))
+                                .textFieldStyle(.plain)
+                                .labelsHidden()
+                                .focused($focusedField, equals: .port)
+                                .focusEffectDisabled()
+                        }
+                        .frame(width: 96)
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = .port }
                         Spacer(minLength: 0)
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             } footer: {
                 assembledPreview
             }
 
             Section {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     HStack(spacing: 10) {
                         fieldLabel("Username")
-                        TextField("Username", text: $username, prompt: Text("Optional"))
-                            .labelsHidden()
-                            .textFieldStyle(.roundedBorder)
+                        FieldSurface(focused: focusedField == .username) {
+                            TextField("Username", text: $username, prompt: Text("Optional"))
+                                .textFieldStyle(.plain)
+                                .labelsHidden()
+                                .focused($focusedField, equals: .username)
+                                .focusEffectDisabled()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = .username }
                     }
                     HStack(spacing: 10) {
                         fieldLabel("Password")
-                        SecureField("Password", text: $password, prompt: Text("Optional"))
-                            .labelsHidden()
-                            .textFieldStyle(.roundedBorder)
+                        FieldSurface(focused: focusedField == .password) {
+                            SecureField("Password", text: $password, prompt: Text("Optional"))
+                                .textFieldStyle(.plain)
+                                .labelsHidden()
+                                .focused($focusedField, equals: .password)
+                                .focusEffectDisabled()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = .password }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             } header: {
                 Text("Credentials")
             }
@@ -252,23 +330,29 @@ struct ProxyImportSheet: View {
     }
 
     private var scriptEditor: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $script)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 136)
-                .accessibilityLabel("Proxy script")
-            if script.isEmpty {
-                // `verbatim` keeps the sample code plain — the default Text
-                // init auto-links URLs into a blue clickable style.
-                Text(verbatim: "// Runs when a consumer starts OpenCode.\n// Return a proxy URL or host:port.\nconst res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;")
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 5)
-                    .padding(.top, 1)
-                    .allowsHitTesting(false)
+        FieldSurface(focused: focusedField == .script) {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $script)
+                    .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 150)
+                    .accessibilityLabel("Proxy script")
+                    .focused($focusedField, equals: .script)
+                    .focusEffectDisabled()
+                if script.isEmpty {
+                    // `verbatim` keeps the sample code plain — the default Text
+                    // init auto-links URLs into a blue clickable style.
+                    Text(verbatim: "// Runs when a consumer starts OpenCode.\n// Return a proxy URL or host:port.\nconst res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;")
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.top, 1)
+                        .allowsHitTesting(false)
+                }
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { focusedField = .script }
     }
 
     private var testScriptRow: some View {
@@ -278,6 +362,7 @@ struct ProxyImportSheet: View {
             } label: {
                 Text("Test Script")
             }
+            .controlSize(.large)
             .disabled(script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || scriptTest == .running)
             scriptTestResult
         }
@@ -333,24 +418,30 @@ struct ProxyImportSheet: View {
 
     private var bulkForm: some View {
         Section {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $text)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 240)
-                    .accessibilityLabel("Proxy URLs, one per line")
-                if text.isEmpty {
-                    // `verbatim` keeps the sample URLs plain — the default Text
-                    // init auto-links them into a blue clickable style.
-                    // `top` aligns the hint with where the editor draws real text.
-                    Text(verbatim: "http://proxy.example:8080\nsocks5h://proxy.example:1080")
+            FieldSurface(focused: focusedField == .bulk) {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $text)
                         .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 5)
-                        .padding(.top, 1)
-                        .allowsHitTesting(false)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 260)
+                        .accessibilityLabel("Proxy URLs, one per line")
+                        .focused($focusedField, equals: .bulk)
+                        .focusEffectDisabled()
+                    if text.isEmpty {
+                        // `verbatim` keeps the sample URLs plain — the default Text
+                        // init auto-links them into a blue clickable style.
+                        // `top` aligns the hint with where the editor draws real text.
+                        Text(verbatim: "http://proxy.example:8080\nsocks5h://proxy.example:1080")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.top, 1)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { focusedField = .bulk }
         }
     }
 
