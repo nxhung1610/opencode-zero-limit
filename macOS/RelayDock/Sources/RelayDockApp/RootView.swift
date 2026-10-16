@@ -1,0 +1,162 @@
+import RelayDockCore
+import SwiftUI
+
+private enum ProxyAppTab: String, CaseIterable, Identifiable {
+    case routing
+    case pool
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .routing: "Routing"
+        case .pool: "Proxy Pool"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .routing: "arrow.left.arrow.right"
+        case .pool: "list.bullet"
+        }
+    }
+}
+
+struct RootView: View {
+    @ObservedObject var model: ProxyAppModel
+    @State private var selectedTab: ProxyAppTab = .routing
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                ForEach(ProxyAppTab.allCases) { tab in
+                    tabButton(tab)
+                }
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            Group {
+                if model.state != nil {
+                    if selectedTab == .routing {
+                        RoutingView(model: model)
+                    } else {
+                        ProxyPoolView(model: model)
+                    }
+                } else if let loadError = model.loadError {
+                    ContentUnavailableView {
+                        Label("Proxy configuration unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(loadError)
+                    } actions: {
+                        Button("Try Again") { model.reload() }
+                    }
+                } else {
+                    ProgressView("Loading proxy configuration…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if model.state != nil {
+                Label("Live OpenCode traffic is not verified by this app.", systemImage: "info.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 10)
+            }
+        }
+        .frame(minWidth: 600, minHeight: 400)
+        .task {
+            if model.state == nil && model.loadError == nil {
+                model.load()
+            }
+        }
+        .sheet(isPresented: $model.isManualChooserPresented) {
+            ManualProxyChooser(model: model)
+        }
+        .alert(
+            "Couldn’t update proxy settings",
+            isPresented: Binding(
+                get: { model.errorMessage != nil },
+                set: { if !$0 { model.clearError() } }
+            )
+        ) {
+            Button("OK", role: .cancel) { model.clearError() }
+        } message: {
+            Text(model.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private func tabButton(_ tab: ProxyAppTab) -> some View {
+        let isSelected = selectedTab == tab
+        return Button {
+            selectedTab = tab
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 21, weight: .regular))
+                Text(tab.title)
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .frame(width: 112, height: 64)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSelected ? "\(tab.title), selected" : tab.title)
+    }
+}
+
+private struct ManualProxyChooser: View {
+    @ObservedObject var model: ProxyAppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choose a proxy for Manual")
+                .font(.title2.weight(.semibold))
+            Text("Manual mode requires an enabled proxy with a valid URL.")
+                .foregroundStyle(.secondary)
+
+            List(model.manualCandidates) { proxy in
+                Button {
+                    model.selectManualProxy(proxy.id)
+                    dismiss()
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(proxy.label)
+                            .foregroundStyle(.primary)
+                        Text(proxyLabel(for: proxy.url))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.plain)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    model.isManualChooserPresented = false
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 420, height: 330)
+    }
+}

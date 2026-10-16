@@ -1,32 +1,23 @@
-# RelayDock — macOS-only plan
+# RelayDock proxy app plan
 
-## Product target
+## Target
 
-A native SwiftUI macOS app for local OpenCode account, usage, proxy, server, and quota management. No web UI, RelayDock HTTP API, Node runtime, or non-macOS packaging.
+A small native macOS app for managing a local proxy pool and Off/Manual/Auto policy, backed by a reusable Swift core. This MVP is config-only: it does not launch or control OpenCode, and it does not claim that any OpenCode process uses the saved proxy.
 
 ## Implemented
 
-- SwiftPM app shell with native split navigation, toolbar, forms, dialogs, and system appearance.
-- Legacy settings/proxy data compatibility and restricted file permissions.
-- Managed OpenCode v1/v2 process lifecycle, health checks, v2 local server auth, and fail-closed proxy environment.
-- v2 Console OAuth and safe connection metadata; v1 organization listing/switching.
-- Read-only SQLite usage summaries and active-account-aware proxy selection.
-- Quota SSE monitoring, cooldown, and v1/v2 account rotation.
-- Safe removal of the old optional PATH wrapper symlink.
-- Unit/regression tests and isolated real-CLI smoke checks for v1.18.35 and v2.0.26.
-- Removal of the browser UI, local HTTP API, npm/Vite project, and web-only CI/docs.
+- Native SwiftUI app target with Routing and Proxy Pool Preferences-style tabs.
+- Proxy import, masked display, enable/disable, removal, health checks, and local persistence.
+- Off, Manual, and Auto policy controls with explicit Manual selection and fail-closed behavior.
+- Clear UI distinction between saved policy, proxy endpoint health, and unverified live OpenCode traffic.
+- Reusable `RelayDockCore` selection and child-process environment helpers.
+- App-model and core regression tests.
+- App bundle build script and macOS CI validation.
 
-## Remaining work
+## Follow-up
 
-1. Finish visual/accessibility QA on the actual macOS window and validate account OAuth/rotation using test credentials and real proxy endpoints.
-2. Verify the built app bundle on the minimum supported macOS release.
-3. Add signing/notarization and a stable release/install flow before claiming public distribution.
+1. Perform visual, keyboard, and VoiceOver QA on a real macOS window in Light and Dark appearance.
+2. Verify the app bundle on macOS 14; add signing/notarization only when a distribution path is chosen.
+3. If a future product direction manages OpenCode processes, first design and verify how the selected client consumes proxy environment variables. Do not infer active routing from configuration or health checks.
 
-## Verification
-
-```sh
-swift test --package-path macOS/RelayDock
-scripts/build-macos-app.sh
-plutil -lint build/RelayDock.app/Contents/Info.plist
-OPENCODE_BIN=/path/to/opencode scripts/smoke-opencode-macos.sh
-```
+Former account/login, usage, quota, unrelated settings, and process-management behavior is archived in `docs/REMOVED-FEATURES.md`; it is not part of this proxy-only app.

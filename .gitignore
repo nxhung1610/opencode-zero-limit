@@ -28,3 +28,13 @@ dist-ssr
 .build/
 .swiftpm/
 build/
+
+# Local review and agent-workspace artifacts
+.gitnexus/
+.archify/
+.impeccable/
+.pi/
+artifacts/
+AGENTS.md
+CLAUDE.md
+.claude/

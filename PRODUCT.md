@@ -2,33 +2,31 @@
 
 ## Platform
 
-Aqua (native macOS desktop); minimum macOS 14.
+macos
 
 ## Users
 
-Individual developers running the OpenCode CLI on their Mac who want to manage local accounts, usage, proxies, and quota recovery from a native desktop window.
+Developers who want to manage a local proxy pool and routing policy for their own OpenCode setup.
 
 ## Product purpose
 
-RelayDock manages the user's local OpenCode server process and configuration through a macOS-native interface. It reads usage data from OpenCode's local SQLite database, observes quota-hit events from the managed server, and can switch among locally saved accounts/orgs. There is no browser frontend, RelayDock HTTP host, Node.js runtime, or hosted backend.
+RelayDock provides a compact Preferences-style interface for proxy configuration and endpoint checks, backed by the `RelayDockCore` Swift package. The app saves policy locally; it does not launch, control, or restart OpenCode and cannot verify how OpenCode routes live traffic.
 
 ## Capabilities
 
-- Accounts: OpenCode v2 browser OAuth lifecycle and safe local credential metadata; v1 organization switching for quota rotation.
-- Usage: read-only local message, token, cost, model, session, and active-account summaries.
-- Proxies: HTTP/HTTPS/SOCKS5 import and health checks; Off, Manual, and Auto modes; sticky account-to-proxy bindings; fail-closed proxy selection.
-- Quota: local SSE monitoring for supported retry quota events and optional account rotation.
-- Settings: auto-start, auto-rotation, CLI path, appearance, and safe removal of an obsolete RelayDock PATH-wrapper symlink.
+- Import and persist HTTP/HTTPS/SOCKS5/SOCKS5H proxies.
+- Enable, disable, inspect, remove, and test configured proxies.
+- Save Off, Manual, and Auto policies. Manual requires an enabled valid selection; Auto excludes known-failed checks and remains fail-closed when no candidate is usable.
+- Expose a core library for consumers that independently select routes and construct a child-process proxy environment.
 
 ## Constraints and safety
 
-- OpenCode is the only supported CLI/provider.
-- Do not claim an exact remaining-quota count; OpenCode does not provide a stable supported local remaining-quota API.
-- OpenCode owns and stores account secrets. RelayDock only displays safe metadata.
-- All managed server traffic is loopback-only. No RelayDock server is exposed to a browser.
-- Proxy Manual/Auto must never fall back to direct; direct access is explicit Off mode.
-- Preserve the existing local settings/proxy namespace unless the user overrides it with `RELAYDOCK_CONFIG_DIR`.
+- A saved policy or passing endpoint check is not evidence that any OpenCode process is currently using a proxy.
+- The app never silently converts Manual/Auto errors into Off/direct mode.
+- Preserve the established proxy data path unless `RELAYDOCK_CONFIG_DIR` or `configDirectory:` overrides it.
+- Native desktop only: macOS 14 or later first; no web build, browser UI, or mobile target in scope.
+- Account login, usage, quota, unrelated settings, and process lifecycle management are out of scope. See `docs/REMOVED-FEATURES.md` for historical reference.
 
 ## Product experience
 
-Use macOS-native navigation, toolbar, forms, dialogs, typography, controls, and accessibility conventions. The app should feel at home next to other SwiftUI utilities—not like a website inside a desktop window.
+Use a compact native Preferences window with two icon tabs: Routing and Proxy Pool. Prefer Aqua controls, semantic system colors, native typography, visible state labels, keyboard access, and VoiceOver descriptions. Avoid dashboard styling and any status copy that implies unverified OpenCode routing.

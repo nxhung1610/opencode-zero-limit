@@ -1,20 +1,20 @@
 # RelayDock for macOS
 
-RelayDock is a native SwiftUI companion for the OpenCode CLI. It runs as a macOS app, manages a local `opencode serve` process, and keeps account, usage, proxy, and quota controls on this Mac.
+RelayDock is a compact native SwiftUI utility for managing a local proxy pool and its Off/Manual/Auto policy. It can import proxies and test enabled endpoints. It does **not** launch or restart OpenCode, apply the saved policy to an OpenCode process, or verify live OpenCode traffic.
 
-**Platform:** macOS 14 or later. **No browser UI, local RelayDock HTTP server, Node.js runtime, or web build is used.**
+**Platform:** macOS 14 or later. **Language:** Swift 6.
 
-## Features
+## What it provides
 
-- **Accounts:** OpenCode v2 Console OAuth sign-in, safe saved-account metadata, activate/remove; quota rotation also supports v1 organizations.
-- **Usage:** read-only summaries from OpenCode's local SQLite database. It reports observed usage, not a fabricated remaining-quota estimate.
-- **Quota:** watches the managed OpenCode event stream and can rotate to another saved account/org after supported quota-hit events. Rotation is optional and has a cooldown.
-- **Proxies:** import and test HTTP/HTTPS/SOCKS5 proxies; select Off, Manual, or Auto. Manual and Auto fail closed rather than silently using a direct connection. Auto keeps sticky proxy bindings by active account.
-- **Settings:** auto-start, auto-rotation, OpenCode binary path, and appearance. A guarded action can remove the old RelayDock PATH-wrapper symlink without changing the installed OpenCode binary.
+- Import and persist HTTP, HTTPS, SOCKS5, and SOCKS5H proxy URLs.
+- Enable, disable, remove, and health-check proxies in the local pool.
+- Save Off, Manual, or Auto policy. Manual and Auto configuration remains fail-closed; invalid or missing routes are not silently changed to Off.
+- Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
+- Provide `RelayDockCore` helpers for consumers that launch their own child process and need to select a route and construct proxy environment variables.
 
-RelayDock never reads or stores OpenCode credential values. OAuth credentials remain in OpenCode's local store. All app state and OpenCode API traffic stay local; the managed API binds to loopback.
+A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy.
 
-## Build and test
+## Build, test, and run
 
 Requires macOS 14+ and Swift 6:
 
@@ -24,33 +24,27 @@ scripts/build-macos-app.sh
 open build/RelayDock.app
 ```
 
-The app bundle is built locally and is not currently signed/notarized for public distribution.
+The app is currently unsigned and not notarized for public distribution.
 
-## OpenCode compatibility smoke
+## Core library
 
-With an installed OpenCode v1 or v2 binary:
+Add the `macOS/RelayDock` Swift package and import `RelayDockCore` from a process-launching consumer:
 
-```sh
-OPENCODE_BIN=/absolute/path/to/opencode scripts/smoke-opencode-macos.sh
+```swift
+import RelayDockCore
+
+let proxies = ProxyStore()
+let selectedProxyURL = try proxies.selectForSpawn()
+let childEnvironment = buildOpenCodeProxyEnvironment(proxyURL: selectedProxyURL)
 ```
 
-This starts the real CLI against an isolated temporary HOME/XDG data directory, verifies version-specific health/account/event endpoints, and stops the managed process. It does not use or modify your saved accounts. We smoke-tested OpenCode v1.18.35 and v2.0.26.
+`selectForSpawn()` returns `nil` only for explicit Off mode. Do not catch a Manual/Auto selection error and continue with `nil`; surface the error and do not launch the child process. Auto may use enabled proxies whose health is unknown, but excludes proxies whose last recorded check failed. The consumer must actually use the returned environment when launching the child and must independently verify its HTTP client's behavior.
 
-## Local data and legacy wrapper
-
-Existing settings and proxy pools are reused from:
-
-```text
-~/Library/Application Support/com.nxhung.opencodezerolimit/
-```
-
-Set `RELAYDOCK_CONFIG_DIR` to use a different configuration directory.
-
-The old optional `~/.local/bin/opencode` wrapper is no longer installed or required. Open **Settings → Legacy Terminal Wrapper** to inspect and safely remove a symlink managed by an earlier RelayDock checkout. The real OpenCode binary and unrelated files are left untouched.
+Set `RELAYDOCK_CONFIG_DIR` or pass `configDirectory:` to `ProxyStore` to use another configuration directory. The library reuses existing proxy pools and does not migrate or delete user data.
 
 ## Scope
 
-RelayDock supports the OpenCode CLI only and is macOS-only. Accounts and browser OAuth are available on OpenCode v2; v1 supports organization switching and quota rotation, but not the v2 OAuth account UI. OpenCode's quota is enforced remotely and changes dynamically; RelayDock shows observed quota events rather than an exact remaining count.
+Account login, usage reporting, quota recovery, app settings, and OpenCode process management are not part of this proxy-only app. Former behavior is recorded in [docs/REMOVED-FEATURES.md](docs/REMOVED-FEATURES.md) for historical reference. The interface follows the [proxy app wireframe](docs/PROXY-APP-WIREFRAME.md).
 
 ## License
 

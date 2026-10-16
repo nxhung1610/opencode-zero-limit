@@ -1,48 +1,32 @@
----
-name: RelayDock
-description: Native macOS operations companion for OpenCode.
----
-
-# Design System: RelayDock
+# RelayDock design
 
 ## Direction
 
-**Creative North Star: “The Local Signal Room.”** A calm, precise native utility that makes account, proxy, server, and quota state legible without imitating a browser dashboard.
-
-The app should follow macOS conventions first: standard window chrome, a `NavigationSplitView`, native toolbar actions, platform typography, system accent colors, and familiar SwiftUI controls. RelayDock-specific styling should clarify real state—not replace platform affordances.
+A calm, precise native macOS utility for proxy configuration—not a browser dashboard or an OpenCode process manager. Keep the small window focused on two jobs: choosing a saved routing policy and maintaining a tested proxy pool.
 
 ## Navigation and composition
 
-- Use a grouped macOS sidebar for Accounts, Usage, Proxies, and Settings.
-- Keep the managed OpenCode status and Start/Stop action in the native toolbar.
-- For Accounts and Proxies, use a restrained in-page list-and-inspector split: select a saved account or proxy task on the left, then keep its state and relevant actions in the detail pane. Do not repeat the global sidebar inside the page.
-- Keep Usage focused on observed totals, token breakdown, and model activity; keep Settings as a single-column native `Form` rather than forcing every page into the inspector pattern.
-- Use `Form` for preferences and configuration; use `GroupBox`, row dividers, and `ContentUnavailableView` for structured content and empty/error states.
-- Preserve generous native window resizing behavior instead of web breakpoints or mobile-specific layouts.
-- Give each view one clear task; prioritize real account/proxy/server status over decorative metrics.
+- Use the compact Preferences-style window with two icon-and-label tabs: **Routing** and **Proxy Pool**.
+- Keep Off/Manual/Auto and their readiness context on Routing. Keep import, endpoint checks, enable/disable, and proxy details on Proxy Pool.
+- Use a native grouped `Form`, standard list rows, native sheets, alerts, and confirmation dialogs.
+- Do not add account, usage, quota, server start/stop, or general settings pages.
+- Preserve a usable minimum window size and native resizing behavior.
 
-## Color and appearance
+## Color and typography
 
-- Use semantic SwiftUI colors and the system accent color for focus, selection, and primary actions.
-- Support System, Light, and Dark appearance through macOS color-scheme behavior.
-- Use explicit text, icons, and shape as well as color for status. Green/orange/red may reinforce a state but must never be its only explanation.
-- Keep surfaces quiet; avoid web-style gradients, glass effects, heavy shadows, and custom background layers that fight native window chrome.
+- Use semantic SwiftUI colors and the system accent color; support system Light and Dark appearance.
+- Pair color with a visible text label and/or symbol for proxy health and routing state.
+- Use system typography; reserve monospaced text for technical values such as proxy endpoints.
+- Avoid gradients, heavy shadows, glass effects, and custom surfaces that fight Aqua window chrome.
 
-## Typography and symbols
+## Interaction and safety
 
-- Default to the macOS system font and dynamic text styles.
-- Use monospaced styling only for paths, proxy URLs, IDs, and other technical values.
-- Use SF Symbols paired with visible labels for important actions and states.
-- Keep page titles, section headings, and supporting copy at native hierarchy and readable measures.
-
-## Interaction and accessibility
-
-- Use standard buttons, toggles, pickers, text fields, text editors, alerts, and confirmation dialogs.
-- Destructive account/wrapper actions require explicit confirmation and explain exactly what is removed.
-- Preserve keyboard navigation, VoiceOver labels, focus visibility, reduced-motion expectations, and adequate hit targets.
-- Errors must state what failed and offer a direct recovery action when possible.
-- Never invent quota remaining, account state, proxy health, or routing relationships.
+- Prefer standard buttons, toggles, pickers, text editors, alerts, and confirmation dialogs.
+- Expose selected tabs, proxy health, and enabled state to VoiceOver; keep keyboard focus and hit targets clear.
+- Retain import text after validation errors and identify invalid lines.
+- Mask proxy credentials in labels, previews, and copy actions.
+- Manual/Auto errors must never silently become Off. A saved setting and a successful endpoint check do not verify live OpenCode traffic; say so in the UI.
 
 ## Brand assets
 
-Keep the existing RelayDock icon as the source of truth. Do not alter the mark without explicit approval.
+Use the existing RelayDock icon as the source of truth. Do not alter the mark without explicit approval.
