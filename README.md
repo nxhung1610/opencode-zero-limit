@@ -48,11 +48,15 @@ Set `RELAYDOCK_CONFIG_DIR` or pass `configDirectory:` to `ProxyStore` to use ano
 **Add One → Type → Custom (JS)** stores a named script instead of a fixed URL. The script runs inside `selectForSpawn()` each time a consumer launches a child process, so it can fetch a fresh proxy from a provider API:
 
 ```js
-const res = http.get("https://api.example.com/proxy", { "Authorization": "Bearer …" });
-return JSON.parse(res).url; // or a "host:port" string
+if (!cache.url) {
+  const res = await fetch("https://api.example.com/proxy", { headers: { "Authorization": "Bearer …" } });
+  cache.url = (await res.json()).url; // or a "host:port" string
+}
+return cache.url;
 ```
 
-- Scripts run in a bare JavaScriptCore context: no file, process, or system access. Available APIs: `http.get(url, headers?)` (synchronous HTTP/HTTPS GET, response capped at 256 KB), `btoa`, `atob`, and a no-op `console`. The script must `return` a proxy URL or `host:port`; the value is validated with the same parser as imported URLs.
+- Scripts run in a sandboxed JavaScriptCore context with no file, process, or module access (`require`/`import` are unavailable). The surface is Node-flavoured but synchronous underneath: `fetch`/`await` (GET/HEAD/POST), `setTimeout`/`setInterval`, `URL`/`URLSearchParams`, `Buffer`, `TextEncoder`/`TextDecoder`, `crypto` (`createHash`/`createHmac` for SHA-256/384/512, `randomUUID`, `randomBytes`), `structuredClone`, `performance.now`, the synchronous `http.get(url, headers?)`/`http.post(url, body, headers?)` helpers (responses capped at 256 KB, request bodies at 64 KB), `btoa`, `atob`, and a no-op `console`. The script must `return` a proxy URL or `host:port`; the value is validated with the same parser as imported URLs.
+- A global `cache` object persists between runs of the same entry — in memory only, per process, capped at 64 KB of JSON. It is dropped whenever a run fails or times out; do not redeclare it in the script.
 - Resolution is fail-closed: a script error, a 10-second timeout, or an invalid result throws `ProxyStoreError.scriptFailed` — the consumer must not launch without a proxy. Health checks run the script first and record a failed check when it errors.
 - Scripts can contain credentials and are stored as written in `<config>/proxies.json` (file permissions 0600). The app masks credentials in resolved previews.
 

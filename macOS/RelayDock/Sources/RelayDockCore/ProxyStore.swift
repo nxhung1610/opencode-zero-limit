@@ -388,11 +388,12 @@ public struct ProxyStore: Sendable {
 
     /// Turns a selected entry into the concrete proxy URL for the child
     /// process. Custom scripts run here; any failure keeps the launch
-    /// fail-closed instead of silently going direct.
+    /// fail-closed instead of silently going direct. Scripts share a
+    /// per-entry memory cache across runs in this process.
     private func resolveSpawnURL(_ entry: ProxyEntry) throws -> String {
         if let script = entry.script {
             do {
-                return try ProxyScriptRunner.resolve(script)
+                return try ProxyScriptRunner.resolve(script, cacheID: entry.id)
             } catch {
                 throw ProxyStoreError.scriptFailed(entry.label, error.localizedDescription)
             }
@@ -403,14 +404,15 @@ public struct ProxyStore: Sendable {
         return entry.url
     }
 
-    /// Runs one health check. Custom scripts resolve to a concrete URL first;
+    /// Runs one health check. Custom scripts resolve to a concrete URL first
+    /// (through the same per-entry memory cache as spawn resolution);
     /// a script failure is recorded as a failed check.
     private func checkEntry(_ entry: ProxyEntry) async -> (String, ProxyHealth) {
         guard let script = entry.script else {
             return (entry.id, await healthChecker(entry.url))
         }
         do {
-            let resolved = try ProxyScriptRunner.resolve(script)
+            let resolved = try ProxyScriptRunner.resolve(script, cacheID: entry.id)
             return (entry.id, await healthChecker(resolved))
         } catch {
             return (entry.id, ProxyHealth(
