@@ -243,11 +243,17 @@ private struct ProxyPoolRow: View {
     }
 }
 
-private struct ProxyImportSheet: View {
+struct ProxyImportSheet: View {
     @ObservedObject var model: ProxyAppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
+    @State private var text: String
     @State private var validationError: String?
+
+    /// `initialText` exists for offscreen fixtures; the app always opens the sheet empty.
+    init(model: ProxyAppModel, initialText: String = "") {
+        self.model = model
+        _text = State(initialValue: initialText)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -261,11 +267,14 @@ private struct ProxyImportSheet: View {
                     .font(.system(.body, design: .monospaced))
                     .accessibilityLabel("Proxy URLs, one per line")
                 if text.isEmpty {
-                    Text("http://proxy.example:8080\nsocks5h://proxy.example:1080")
+                    // `verbatim` keeps the sample URLs plain — the default Text
+                    // init auto-links them into a blue clickable style.
+                    // `top` aligns the hint with where the editor draws real text.
+                    Text(verbatim: "http://proxy.example:8080\nsocks5h://proxy.example:1080")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 5)
-                        .padding(.vertical, 8)
+                        .padding(.top, 1)
                         .allowsHitTesting(false)
                 }
             }
@@ -283,14 +292,22 @@ private struct ProxyImportSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Import") {
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Cancel")
+                        .padding(.vertical, 6)
+                }
+                .keyboardShortcut(.cancelAction)
+                Button {
                     if let error = model.importProxies(text) {
                         validationError = error
                     } else {
                         dismiss()
                     }
+                } label: {
+                    Text("Import")
+                        .padding(.vertical, 6)
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
