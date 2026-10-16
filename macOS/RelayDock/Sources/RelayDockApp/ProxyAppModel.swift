@@ -135,6 +135,17 @@ final class ProxyAppModel: ObservableObject {
         }
     }
 
+    /// Updates a custom JavaScript entry in place. Returns nil on success, or a message while preserving the caller's input.
+    func updateProxyScript(id: String, name: String, script: String) -> String? {
+        do {
+            state = try store.updateProxyScript(id: id, name: name, script: script)
+            errorMessage = nil
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func testAll() async {
         guard !isTesting, state != nil else { return }
         isTesting = true

@@ -59,6 +59,7 @@ return cache.url;
 - A global `cache` object persists between runs of the same entry — in memory only, per process, capped at 64 KB of JSON. It is dropped whenever a run fails or times out; do not redeclare it in the script.
 - Resolution is fail-closed: a script error, a 10-second timeout, or an invalid result throws `ProxyStoreError.scriptFailed` — the consumer must not launch without a proxy. Health checks run the script first and record a failed check when it errors.
 - Scripts can contain credentials and are stored as written in `<config>/proxies.json` (file permissions 0600). The app masks credentials in resolved previews.
+- Rename or re-script an entry from the pool row's ⋯ menu (**Edit Script…**). Editing keeps the entry's identity, so Manual and sticky selections survive; changing the script clears its last recorded check and its in-memory `cache` (renaming keeps both).
 
 ## Scope
 
