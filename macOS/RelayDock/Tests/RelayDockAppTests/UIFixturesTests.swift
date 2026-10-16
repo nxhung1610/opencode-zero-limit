@@ -112,7 +112,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-single",
-                size: CGSize(width: 520, height: 470),
+                size: CGSize(width: 520, height: 520),
                 schemes: bothSchemes,
                 content: AnyView(
                     ProxyImportSheet(model: try makeModel(mode: .off, proxies: mixedPool))
@@ -121,7 +121,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-custom",
-                size: CGSize(width: 520, height: 470),
+                size: CGSize(width: 520, height: 520),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
@@ -136,7 +136,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-custom-empty",
-                size: CGSize(width: 520, height: 470),
+                size: CGSize(width: 520, height: 520),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
@@ -148,7 +148,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-single-preview",
-                size: CGSize(width: 520, height: 470),
+                size: CGSize(width: 520, height: 520),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
@@ -160,7 +160,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-bulk",
-                size: CGSize(width: 520, height: 470),
+                size: CGSize(width: 520, height: 520),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
