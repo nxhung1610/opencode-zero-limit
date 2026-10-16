@@ -163,6 +163,8 @@ public enum ProxyStoreError: LocalizedError, Equatable {
     case manualSelectionDisabled(String)
     case invalidProxyConfiguration(String)
     case scriptFailed(String, String)
+    case proxyNotFound
+    case notScriptEntry
     case autoHasNoEnabledProxy
     case autoHasNoValidProxy
     case autoHasNoHealthyProxy
@@ -184,6 +186,8 @@ public enum ProxyStoreError: LocalizedError, Equatable {
         case .manualSelectionDisabled(let label): "The selected proxy (\(label)) is disabled. Enable it or choose another enabled proxy."
         case .invalidProxyConfiguration(let label): "The selected proxy (\(label)) has an invalid or unsupported URL. Fix its configuration before routing OpenCode."
         case .scriptFailed(let label, let reason): "\(label) could not resolve a proxy. \(reason)"
+        case .proxyNotFound: "That proxy is no longer in the pool."
+        case .notScriptEntry: "Only custom JavaScript entries can be edited."
         case .autoHasNoEnabledProxy: "Auto mode needs at least one enabled proxy. Enable a proxy, or switch the proxy mode to Off."
         case .autoHasNoValidProxy: "Auto mode has no enabled proxy with a valid supported URL. Fix the proxy pool, or switch the proxy mode to Off."
         case .autoHasNoHealthyProxy: "No enabled proxy passed its last test. Test the pool again, enable a proxy, or switch the proxy mode to Off."
@@ -290,12 +294,38 @@ public struct ProxyStore: Sendable {
         return try save(state)
     }
 
+    /// Updates a custom JavaScript entry in place, keeping its identity so
+    /// manual and sticky selections survive the edit. A changed script clears
+    /// the recorded check and the entry's memory cache; a rename does not.
+    @discardableResult
+    public func updateProxyScript(id: String, name: String, script: String) throws -> ProxyState {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { throw ProxyStoreError.scriptNameRequired }
+        guard !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProxyStoreError.scriptEmpty }
+        var state = try load()
+        guard let index = state.proxies.firstIndex(where: { $0.id == id }) else {
+            throw ProxyStoreError.proxyNotFound
+        }
+        guard state.proxies[index].script != nil else { throw ProxyStoreError.notScriptEntry }
+        guard !state.proxies.contains(where: { $0.id != id && $0.script == script }) else {
+            throw ProxyStoreError.proxyAlreadyExists("This script")
+        }
+        if state.proxies[index].script != script {
+            state.proxies[index].health = nil
+            ProxyScriptCache.shared.remove(for: id)
+        }
+        state.proxies[index].label = trimmedName
+        state.proxies[index].script = script
+        return try save(state)
+    }
+
     @discardableResult
     public func remove(_ id: String) throws -> ProxyState {
         var state = try load()
         state.proxies.removeAll { $0.id == id }
         if state.manualId == id { state.manualId = nil }
         state.bindings = state.bindings.filter { $0.value != id }
+        ProxyScriptCache.shared.remove(for: id)
         return try save(state)
     }
 

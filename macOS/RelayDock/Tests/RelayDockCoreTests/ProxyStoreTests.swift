@@ -450,6 +450,98 @@ struct ProxyStoreTests {
         #expect(health?.error?.contains("boom") == true)
     }
 
+    @Test func editingAScriptUpdatesInPlaceAndKeepsIdentityAndSelection() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(
+            name: "Rotating",
+            script: "return \"http://edge.example:8080\";"
+        )
+        let entry = added.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+        var pinned = try store.load()
+        pinned.bindings["account-a"] = entry.id
+        pinned.proxies[0].health = ProxyHealth(ok: true, latencyMs: 5, checkedAt: 1)
+        _ = try store.save(pinned)
+
+        let updated = try store.updateProxyScript(
+            id: entry.id,
+            name: "Rotating v2",
+            script: "return \"socks5://127.0.0.1:1080\";"
+        )
+
+        #expect(updated.proxies.count == 1)
+        #expect(updated.proxies[0].id == entry.id)
+        #expect(updated.proxies[0].label == "Rotating v2")
+        #expect(updated.proxies[0].script == "return \"socks5://127.0.0.1:1080\";")
+        #expect(updated.proxies[0].health == nil)
+        #expect(updated.manualId == entry.id)
+        #expect(updated.bindings["account-a"] == entry.id)
+        #expect(try store.load() == updated)
+        #expect(try store.selectForSpawn() == "socks5://127.0.0.1:1080")
+    }
+
+    @Test func renamingAScriptKeepsItsHealthCheck() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = "return \"http://edge.example:8080\";"
+        let added = try store.addProxyScript(name: "Rotating", script: script)
+        var pinned = try store.load()
+        pinned.proxies[0].health = ProxyHealth(ok: true, latencyMs: 5, checkedAt: 1)
+        _ = try store.save(pinned)
+
+        let renamed = try store.updateProxyScript(id: added.proxies[0].id, name: "Rotating (EU)", script: script)
+
+        #expect(renamed.proxies[0].label == "Rotating (EU)")
+        #expect(renamed.proxies[0].health?.ok == true)
+    }
+
+    @Test func editingAScriptValidatesNameScriptDuplicatesAndEntryKind() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scriptA = "return \"http://edge-a.example:8080\";"
+        let scriptB = "return \"http://edge-b.example:8080\";"
+        _ = try store.addProxyScript(name: "A", script: scriptA)
+        let both = try store.addProxyScript(name: "B", script: scriptB)
+        let entryB = try #require(both.proxies.first(where: { $0.script == scriptB }))
+        let withURL = try store.addProxyURL("http://plain.example:8080")
+        let urlEntry = try #require(withURL.proxies.first(where: { $0.script == nil }))
+
+        do {
+            _ = try store.updateProxyScript(id: entryB.id, name: "   ", script: scriptB)
+            Issue.record("An empty name must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .scriptNameRequired)
+        }
+        do {
+            _ = try store.updateProxyScript(id: entryB.id, name: "B", script: "   ")
+            Issue.record("An empty script must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .scriptEmpty)
+        }
+        do {
+            _ = try store.updateProxyScript(id: entryB.id, name: "B", script: scriptA)
+            Issue.record("Duplicating another entry's script must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .proxyAlreadyExists("This script"))
+        }
+        do {
+            _ = try store.updateProxyScript(id: "px_missing", name: "B", script: scriptB)
+            Issue.record("An unknown entry id must be rejected")
+        } catch {
+            #expect(error as? ProxyStoreError == .proxyNotFound)
+        }
+        do {
+            _ = try store.updateProxyScript(id: urlEntry.id, name: "URL", script: scriptB)
+            Issue.record("A URL entry must not be edited as a script")
+        } catch {
+            #expect(error as? ProxyStoreError == .notScriptEntry)
+        }
+
+        let kept = try store.updateProxyScript(id: entryB.id, name: "B (kept)", script: scriptB)
+        #expect(kept.proxies.first(where: { $0.id == entryB.id })?.label == "B (kept)")
+    }
+
     private func makeStore() -> (URL, ProxyStore) {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         return (directory, ProxyStore(configDirectory: directory))

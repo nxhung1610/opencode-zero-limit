@@ -358,6 +358,14 @@ final class ProxyScriptCache: @unchecked Sendable {
         defer { lock.unlock() }
         snapshots[id] = json
     }
+
+    /// Drops the snapshot for an entry — used when its script changes or the
+    /// entry is removed, so stale data is never served to the new definition.
+    func remove(for id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        snapshots[id] = nil
+    }
 }
 
 /// A failure raised by a host API inside a script; surfaced as a JavaScript
