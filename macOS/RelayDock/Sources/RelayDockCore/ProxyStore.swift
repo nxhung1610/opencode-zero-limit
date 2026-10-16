@@ -74,10 +74,39 @@ public struct ProxyState: Codable, Equatable, Sendable {
 
     public static let defaults = ProxyState()
 
+    public var enabledProxies: [ProxyEntry] {
+        proxies.filter(\.enabled)
+    }
+
+    public var validEnabledProxies: [ProxyEntry] {
+        enabledProxies.filter { parseProxyImportLine($0.url) == $0.url }
+    }
+
+    /// Auto-eligible proxies include unchecked entries, but exclude entries with a known failed check.
+    public var autoEligibleProxies: [ProxyEntry] {
+        validEnabledProxies.filter { $0.health?.ok != false }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: ProxyCodingKey.self)
-        let rawMode = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("mode")) ?? "off"
-        mode = ProxyMode(rawValue: rawMode) ?? .off
+        let modeKey = ProxyCodingKey("mode")
+        guard let rawMode = try container.decodeIfPresent(String.self, forKey: modeKey) else {
+            throw DecodingError.keyNotFound(
+                modeKey,
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "A persisted proxy configuration must specify a mode."
+                )
+            )
+        }
+        guard let decodedMode = ProxyMode(rawValue: rawMode) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: modeKey,
+                in: container,
+                debugDescription: "Unsupported proxy mode: \(rawMode)"
+            )
+        }
+        mode = decodedMode
         manualId = try container.decodeIfPresent(String.self, forKey: ProxyCodingKey("manualId"))
             ?? container.decodeIfPresent(String.self, forKey: ProxyCodingKey("manual_id"))
         proxies = (try? container.decode([ProxyEntry].self, forKey: ProxyCodingKey("proxies"))) ?? []
@@ -97,17 +126,24 @@ private struct ProxyCodingKey: CodingKey {
 
 public enum ProxyStoreError: LocalizedError, Equatable {
     case unreadable(String)
+    case invalidImportLines([Int])
     case noManualSelection
     case manualSelectionDisabled(String)
+    case invalidProxyConfiguration(String)
     case autoHasNoEnabledProxy
+    case autoHasNoValidProxy
     case autoHasNoHealthyProxy
 
     public var errorDescription: String? {
         switch self {
         case .unreadable(let message): "Cannot read proxies.json: \(message)"
+        case .invalidImportLines(let lines):
+            "Invalid proxy URL on line\(lines.count == 1 ? "" : "s") \(lines.map(String.init).joined(separator: ", ")). Fix the URL and try again. Supported schemes: http, https, socks5, socks5h; host:port is also accepted."
         case .noManualSelection: "No proxy is selected for manual mode. Choose a proxy, or switch the proxy mode to Off."
-        case .manualSelectionDisabled(let label): "The selected proxy (\(label)) is disabled. Enable it, choose another proxy, or switch the proxy mode to Off."
+        case .manualSelectionDisabled(let label): "The selected proxy (\(label)) is disabled. Enable it or choose another enabled proxy."
+        case .invalidProxyConfiguration(let label): "The selected proxy (\(label)) has an invalid or unsupported URL. Fix its configuration before routing OpenCode."
         case .autoHasNoEnabledProxy: "Auto mode needs at least one enabled proxy. Enable a proxy, or switch the proxy mode to Off."
+        case .autoHasNoValidProxy: "Auto mode has no enabled proxy with a valid supported URL. Fix the proxy pool, or switch the proxy mode to Off."
         case .autoHasNoHealthyProxy: "No enabled proxy passed its last test. Test the pool again, enable a proxy, or switch the proxy mode to Off."
         }
     }
@@ -116,6 +152,7 @@ public enum ProxyStoreError: LocalizedError, Equatable {
 public struct ProxyStore: Sendable {
     public let fileURL: URL
     private let healthChecker: @Sendable (String) async -> ProxyHealth
+    private static let maxConcurrentHealthChecks = 4
 
     public init(
         configDirectory: URL? = nil,
@@ -131,8 +168,9 @@ public struct ProxyStore: Sendable {
             let homePath = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             let home = homePath.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
                 ?? FileManager.default.homeDirectoryForCurrentUser
+            // Keep existing proxy pools in place; this library does not migrate or delete user data.
             directory = home.appending(path: "Library/Application Support", directoryHint: .isDirectory)
-                .appending(path: SettingsStore.legacyNamespace, directoryHint: .isDirectory)
+                .appending(path: "com.nxhung.opencodezerolimit", directoryHint: .isDirectory)
         }
         fileURL = directory.appending(path: "proxies.json")
         self.healthChecker = healthChecker
@@ -164,8 +202,16 @@ public struct ProxyStore: Sendable {
 
     @discardableResult
     public func importProxies(_ text: String) throws -> ProxyState {
+        let lines = text.components(separatedBy: .newlines)
+        let invalidLines = lines.enumerated().compactMap { index, line -> Int? in
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedLine.isEmpty, !trimmedLine.hasPrefix("#") else { return nil }
+            return parseProxyImportLine(line) == nil ? index + 1 : nil
+        }
+        guard invalidLines.isEmpty else { throw ProxyStoreError.invalidImportLines(invalidLines) }
+
         var state = try load()
-        for line in text.components(separatedBy: .newlines) {
+        for line in lines {
             guard let url = parseProxyImportLine(line) else { continue }
             let id = proxyEntryID(for: url)
             guard !state.proxies.contains(where: { $0.id == id || $0.url == url }) else { continue }
@@ -193,9 +239,16 @@ public struct ProxyStore: Sendable {
     @discardableResult
     public func setMode(_ mode: ProxyMode, manualId: String?) throws -> ProxyState {
         var state = try load()
+        let selectedProxy = manualId.flatMap { candidate in state.proxies.first(where: { $0.id == candidate }) }
+        if mode == .manual {
+            guard let selectedProxy else { throw ProxyStoreError.noManualSelection }
+            guard selectedProxy.enabled else { throw ProxyStoreError.manualSelectionDisabled(selectedProxy.label) }
+            guard parseProxyImportLine(selectedProxy.url) == selectedProxy.url else {
+                throw ProxyStoreError.invalidProxyConfiguration(selectedProxy.label)
+            }
+        }
         state.mode = mode
-        state.manualId = manualId.flatMap { candidate in state.proxies.contains(where: { $0.id == candidate }) ? candidate : nil }
-        if mode == .manual && state.manualId == nil { state.mode = .off }
+        state.manualId = selectedProxy?.id
         return try save(state)
     }
 
@@ -206,11 +259,18 @@ public struct ProxyStore: Sendable {
         let checkedURLs = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.url) })
         let healthChecker = self.healthChecker
         let results = await withTaskGroup(of: (String, ProxyHealth).self) { group in
-            for entry in entries {
+            var iterator = entries.makeIterator()
+            for _ in 0..<min(Self.maxConcurrentHealthChecks, entries.count) {
+                guard let entry = iterator.next() else { break }
                 group.addTask { (entry.id, await healthChecker(entry.url)) }
             }
             var checked: [String: ProxyHealth] = [:]
-            for await (id, health) in group { checked[id] = health }
+            while let (id, health) = await group.next() {
+                checked[id] = health
+                if let entry = iterator.next() {
+                    group.addTask { (entry.id, await healthChecker(entry.url)) }
+                }
+            }
             return checked
         }
         // Network checks suspend; merge results into the latest saved state rather than
@@ -234,11 +294,17 @@ public struct ProxyStore: Sendable {
                 throw ProxyStoreError.noManualSelection
             }
             guard selected.enabled else { throw ProxyStoreError.manualSelectionDisabled(selected.label) }
+            guard parseProxyImportLine(selected.url) == selected.url else {
+                throw ProxyStoreError.invalidProxyConfiguration(selected.label)
+            }
             return selected.url
         }
 
-        guard state.proxies.contains(where: \.enabled) else { throw ProxyStoreError.autoHasNoEnabledProxy }
-        let usable = state.proxies.filter { $0.enabled && $0.health?.ok != false }
+        let enabled = state.enabledProxies
+        guard !enabled.isEmpty else { throw ProxyStoreError.autoHasNoEnabledProxy }
+        let valid = state.validEnabledProxies
+        guard !valid.isEmpty else { throw ProxyStoreError.autoHasNoValidProxy }
+        let usable = state.autoEligibleProxies
         guard !usable.isEmpty else { throw ProxyStoreError.autoHasNoHealthyProxy }
         if let boundID = state.bindings[accountID], let bound = usable.first(where: { $0.id == boundID }) {
             return bound.url

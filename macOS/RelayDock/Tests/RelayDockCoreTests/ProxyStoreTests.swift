@@ -13,7 +13,6 @@ struct ProxyStoreTests {
         https://proxy-b.example:8443
         socks5://127.0.0.1:1080
         socks5h://proxy-c.example:1081
-        invalid.example
         http://alice:secret@proxy-a.example:8080
         """)
 
@@ -23,6 +22,25 @@ struct ProxyStoreTests {
         #expect(maskedProxyURL(state.proxies[0].url).contains("proxy-a.example:8080"))
         #expect(!maskedProxyURL(state.proxies[0].url).contains("secret"))
         #expect(state.proxies[0].id == proxyEntryID(for: state.proxies[0].url))
+    }
+
+    @Test func invalidImportReportsLineNumbersAndDoesNotPartiallySave() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let existing = try store.importProxies("http://proxy-a.example:8080")
+
+        do {
+            _ = try store.importProxies("""
+            # supported comment
+            not-a-proxy
+            ftp://proxy-b.example:21
+            """)
+            Issue.record("Import should report malformed and unsupported proxy URLs")
+        } catch {
+            #expect(error as? ProxyStoreError == .invalidImportLines([2, 3]))
+        }
+
+        #expect(try store.load() == existing)
     }
 
     @Test func manualModeUsesOnlyTheSelectedEnabledProxy() throws {
@@ -40,6 +58,39 @@ struct ProxyStoreTests {
             Issue.record("Manual mode must not bypass a disabled selected proxy")
         } catch {
             #expect(error as? ProxyStoreError == .manualSelectionDisabled(selected.label))
+        }
+    }
+
+    @Test func manualModeRejectsASelectionThatIsAlreadyDisabled() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let selected = imported.proxies[0]
+        let disabledState = try store.setEnabled(selected.id, enabled: false)
+
+        do {
+            _ = try store.setMode(.manual, manualId: selected.id)
+            Issue.record("Manual mode must reject a disabled proxy selection")
+        } catch {
+            #expect(error as? ProxyStoreError == .manualSelectionDisabled(selected.label))
+        }
+
+        #expect(try store.load() == disabledState)
+    }
+
+    @Test func manualModeCannotSilentlyBecomeDirectOffWithoutASelection() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = try store.importProxies("http://proxy-a.example:8080")
+
+        for selection: String? in [nil, "missing-proxy"] {
+            do {
+                _ = try store.setMode(.manual, manualId: selection)
+                Issue.record("Manual mode without a valid selection must fail rather than switch to Off")
+            } catch {
+                #expect(error as? ProxyStoreError == .noManualSelection)
+            }
+            #expect(try store.load() == initial)
         }
     }
 
@@ -77,6 +128,22 @@ struct ProxyStoreTests {
         }
     }
 
+    @Test func autoReadinessSummaryIsNonMutatingAndMatchesSelectionRules() {
+        let proxies = [
+            ProxyEntry(id: "passed", label: "Passed", url: "http://passed.example:8080", health: ProxyHealth(ok: true)),
+            ProxyEntry(id: "unchecked", label: "Unchecked", url: "http://unchecked.example:8080"),
+            ProxyEntry(id: "failed", label: "Failed", url: "http://failed.example:8080", health: ProxyHealth(ok: false)),
+            ProxyEntry(id: "disabled", label: "Disabled", url: "http://disabled.example:8080", enabled: false),
+            ProxyEntry(id: "invalid", label: "Invalid", url: "ftp://invalid.example:21"),
+        ]
+        let state = ProxyState(mode: .auto, proxies: proxies)
+
+        #expect(state.enabledProxies.map(\.id) == ["passed", "unchecked", "failed", "invalid"])
+        #expect(state.validEnabledProxies.map(\.id) == ["passed", "unchecked", "failed"])
+        #expect(state.autoEligibleProxies.map(\.id) == ["passed", "unchecked"])
+        #expect(state.bindings.isEmpty)
+    }
+
     @Test func removalClearsManualAndStickyReferencesAndOffIsExplicitDirectMode() throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -111,6 +178,43 @@ struct ProxyStoreTests {
             Issue.record("Corrupt proxy configuration should be surfaced, not treated as Off")
         } catch {
             #expect(error is ProxyStoreError)
+        }
+    }
+
+    @Test func missingOrUnknownPersistedModeIsNotSilentlyTreatedAsDirectOff() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for contents in [#"{"proxies":[]}"#, #"{"mode":"autmo","proxies":[]}"#] {
+            try Data(contents.utf8).write(to: store.fileURL)
+            do {
+                _ = try store.selectForSpawn()
+                Issue.record("A missing or invalid mode must not be interpreted as explicit Off mode")
+            } catch {
+                #expect(error is ProxyStoreError)
+            }
+        }
+    }
+
+    @Test func invalidPersistedProxyURLsFailClosedInManualAndAutoModes() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let unsupported = ProxyEntry(id: "bad", label: "Unsupported", url: "ftp://proxy.example:21")
+        _ = try store.save(ProxyState(mode: .manual, manualId: unsupported.id, proxies: [unsupported]))
+
+        do {
+            _ = try store.selectForSpawn()
+            Issue.record("Manual mode must reject a persisted unsupported proxy URL")
+        } catch {
+            #expect(error as? ProxyStoreError == .invalidProxyConfiguration(unsupported.label))
+        }
+
+        _ = try store.save(ProxyState(mode: .auto, proxies: [unsupported]))
+        do {
+            _ = try store.selectForSpawn()
+            Issue.record("Auto mode must not choose a persisted unsupported proxy URL")
+        } catch {
+            #expect(error as? ProxyStoreError == .autoHasNoValidProxy)
         }
     }
 
@@ -161,6 +265,27 @@ struct ProxyStoreTests {
         #expect(checked.proxies.first(where: { $0.id == imported.proxies[0].id })?.health?.ok == true)
     }
 
+    @Test func checkAllLimitsConcurrentHealthRequests() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tracker = ProxyCheckConcurrencyTracker()
+        let store = ProxyStore(configDirectory: directory, healthChecker: { url in await tracker.check(url) })
+        let proxies = (0..<12).map { index in
+            ProxyEntry(
+                id: "proxy-\(index)",
+                label: "Proxy \(index)",
+                url: "http://proxy-\(index).example:8080"
+            )
+        }
+        _ = try store.save(ProxyState(proxies: proxies))
+
+        _ = try await store.checkAll()
+
+        let maximum = await tracker.maximumConcurrentChecks()
+        #expect(maximum <= 4)
+        #expect(maximum > 1)
+    }
+
     private func makeStore() -> (URL, ProxyStore) {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         return (directory, ProxyStore(configDirectory: directory))
@@ -188,5 +313,22 @@ private actor ProxyCheckGate {
         let waiters = resultWaiters
         resultWaiters.removeAll()
         waiters.forEach { $0.resume(returning: ProxyHealth(ok: true, checkedAt: 1)) }
+    }
+}
+
+private actor ProxyCheckConcurrencyTracker {
+    private var activeChecks = 0
+    private var maximumActiveChecks = 0
+
+    func check(_ url: String) async -> ProxyHealth {
+        activeChecks += 1
+        maximumActiveChecks = max(maximumActiveChecks, activeChecks)
+        try? await Task.sleep(for: .milliseconds(25))
+        activeChecks -= 1
+        return ProxyHealth(ok: true, checkedAt: 1)
+    }
+
+    func maximumConcurrentChecks() -> Int {
+        maximumActiveChecks
     }
 }
