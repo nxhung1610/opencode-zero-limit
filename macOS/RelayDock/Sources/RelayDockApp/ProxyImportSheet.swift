@@ -207,7 +207,7 @@ struct ProxyImportSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 4)
             } footer: {
-                Text("Available: http.get(url, headers?), btoa, atob, console. No file or process access. The script must return a value.")
+                Text("Sandbox: fetch/await, timers, URL, Buffer, crypto, plus a memory-only `cache` between launches. No file, process, or module access. Must return a proxy value.")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 10)
             }
@@ -342,7 +342,7 @@ struct ProxyImportSheet: View {
                 if script.isEmpty {
                     // `verbatim` keeps the sample code plain — the default Text
                     // init auto-links URLs into a blue clickable style.
-                    Text(verbatim: "// Runs when a consumer starts OpenCode.\n// Return a proxy URL or host:port.\nconst res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;")
+                    Text(verbatim: "// Runs when a consumer starts OpenCode. cache stays in memory.\nif (!cache.url) {\n  const res = await fetch(\"https://api.example.com/proxy\");\n  cache.url = (await res.json()).url;\n}\nreturn cache.url;")
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 5)

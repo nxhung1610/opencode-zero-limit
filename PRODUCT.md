@@ -15,7 +15,7 @@ RelayDock provides a compact Preferences-style interface for proxy configuration
 ## Capabilities
 
 - Import and persist HTTP/HTTPS/SOCKS4/SOCKS4A/SOCKS5/SOCKS5H proxies, one at a time (typed fields) or in bulk.
-- Support named custom JavaScript entries that resolve to a proxy at spawn time through a sandboxed JavaScriptCore script.
+- Support named custom JavaScript entries that resolve to a proxy at spawn time through a sandboxed JavaScriptCore script (no file, process, or module access).
 - Enable, disable, inspect, remove, and test configured proxies.
 - Save Off, Manual, and Auto policies. Manual requires an enabled valid selection; Auto excludes known-failed checks and remains fail-closed when no candidate is usable.
 - Expose a core library for consumers that independently select routes and construct a child-process proxy environment.

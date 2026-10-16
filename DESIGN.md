@@ -26,7 +26,7 @@ A calm, precise native macOS utility for proxy configuration—not a browser das
 - Retain import text after validation errors and identify invalid lines.
 - Mask proxy credentials in labels, previews, and copy actions.
 - The Add Proxies sheet keeps two modes: Add One (typed fields, or a custom JavaScript entry) and Bulk Import. Validate inline and preserve typed input after errors.
-- Custom (JS) entries use a monospaced editor, a documented minimal API surface (`http.get`, `btoa`/`atob`, `console`), and a Test Script action; mask credentials in resolved previews.
+- Custom (JS) entries use a monospaced editor, a documented Node-flavoured API surface (`fetch`/`await`, timers, `URL`, `Buffer`, `crypto`, synchronous `http.get`/`http.post`, plus a memory-only `cache` kept between runs), and a Test Script action; mask credentials in resolved previews.
 - Manual/Auto errors must never silently become Off. A saved setting and a successful endpoint check do not verify live OpenCode traffic; say so in the UI.
 
 ## Brand assets
