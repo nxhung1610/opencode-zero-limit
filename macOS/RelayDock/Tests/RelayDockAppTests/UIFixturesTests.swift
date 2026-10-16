@@ -112,7 +112,7 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-single",
-                size: CGSize(width: 520, height: 440),
+                size: CGSize(width: 520, height: 470),
                 schemes: bothSchemes,
                 content: AnyView(
                     ProxyImportSheet(model: try makeModel(mode: .off, proxies: mixedPool))
@@ -121,26 +121,51 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "import-sheet-custom",
-                size: CGSize(width: 520, height: 440),
+                size: CGSize(width: 520, height: 470),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
                         model: try makeModel(mode: .off, proxies: mixedPool),
-                        initialScheme: .custom,
-                        initialScript: "const res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;"
+                        prefill: .init(
+                            scheme: .custom,
+                            script: "const res = http.get(\"https://api.example.com/proxy\");\nreturn JSON.parse(res).url;"
+                        )
+                    )
+                    .background(.background)
+                )
+            ),
+            FixtureScenario(
+                name: "import-sheet-custom-empty",
+                size: CGSize(width: 520, height: 470),
+                schemes: [.dark],
+                content: AnyView(
+                    ProxyImportSheet(
+                        model: try makeModel(mode: .off, proxies: mixedPool),
+                        prefill: .init(scheme: .custom)
+                    )
+                    .background(.background)
+                )
+            ),
+            FixtureScenario(
+                name: "import-sheet-single-preview",
+                size: CGSize(width: 520, height: 470),
+                schemes: [.dark],
+                content: AnyView(
+                    ProxyImportSheet(
+                        model: try makeModel(mode: .off, proxies: mixedPool),
+                        prefill: .init(host: "proxy.example", port: "8080", username: "demo", password: "hunter2")
                     )
                     .background(.background)
                 )
             ),
             FixtureScenario(
                 name: "import-sheet-bulk",
-                size: CGSize(width: 520, height: 440),
+                size: CGSize(width: 520, height: 470),
                 schemes: [.dark],
                 content: AnyView(
                     ProxyImportSheet(
                         model: try makeModel(mode: .off, proxies: mixedPool),
-                        initialText: "http://proxy.example:8080\nsocks4a://[2001:db8::1]:1080",
-                        initialMode: .bulk
+                        prefill: .init(text: "http://proxy.example:8080\nsocks4a://[2001:db8::1]:1080", mode: .bulk)
                     )
                     .background(.background)
                 )
