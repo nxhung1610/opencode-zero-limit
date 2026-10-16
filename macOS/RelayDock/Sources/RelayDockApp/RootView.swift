@@ -129,9 +129,12 @@ private struct ManualProxyChooser: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") {
+                Button {
                     model.isManualChooserPresented = false
                     dismiss()
+                } label: {
+                    Text("Cancel")
+                        .padding(.vertical, 6)
                 }
                 .keyboardShortcut(.cancelAction)
             }

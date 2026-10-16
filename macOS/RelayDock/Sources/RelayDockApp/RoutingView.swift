@@ -16,6 +16,7 @@ struct RoutingView: View {
                         Text("Auto").tag(ProxyMode.auto.rawValue)
                     }
                     .pickerStyle(.segmented)
+                    .controlSize(.large)
 
                     if state.mode == .manual {
                         manualProxyControl(state)
@@ -144,6 +145,7 @@ struct RoutingView: View {
                         .tag(proxy.id)
                 }
             }
+            .controlSize(.large)
         } else {
             LabeledContent("Manual Proxy") {
                 HStack(spacing: 10) {
@@ -154,8 +156,11 @@ struct RoutingView: View {
                         Text("Choose an enabled proxy")
                             .foregroundStyle(.secondary)
                     }
-                    Button("Choose…") {
+                    Button {
                         model.isManualChooserPresented = true
+                    } label: {
+                        Text("Choose…")
+                            .padding(.vertical, 6)
                     }
                     .disabled(model.manualCandidates.isEmpty)
                 }

@@ -24,14 +24,17 @@ struct ProxyPoolView: View {
                 Button {
                     Task { await model.testAll() }
                 } label: {
-                    if model.isTesting {
-                        HStack(spacing: 7) {
-                            ProgressView().controlSize(.small)
-                            Text("Testing…")
+                    Group {
+                        if model.isTesting {
+                            HStack(spacing: 7) {
+                                ProgressView().controlSize(.small)
+                                Text("Testing…")
+                            }
+                        } else {
+                            Label("Test All", systemImage: "arrow.clockwise")
                         }
-                    } else {
-                        Label("Test All", systemImage: "arrow.clockwise")
                     }
+                    .padding(.vertical, 6)
                 }
                 .disabled(model.isTesting || model.state?.enabledProxies.isEmpty != false)
 
@@ -39,6 +42,7 @@ struct ProxyPoolView: View {
                     showImport = true
                 } label: {
                     Label("Import", systemImage: "plus")
+                        .padding(.vertical, 6)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
@@ -54,7 +58,12 @@ struct ProxyPoolView: View {
                 } description: {
                     Text("Import proxy URLs to build your pool.")
                 } actions: {
-                    Button("Import Proxies") { showImport = true }
+                    Button {
+                        showImport = true
+                    } label: {
+                        Text("Import Proxies")
+                            .padding(.vertical, 6)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let proxies = model.state?.proxies {
@@ -67,10 +76,13 @@ struct ProxyPoolView: View {
                                 expandedID: $expandedID,
                                 removalTarget: $removalTarget
                             )
-                            Divider().padding(.leading, 22)
+                            if proxy.id != proxies.last?.id {
+                                Divider().padding(.leading, 30)
+                            }
                         }
                     }
                     .padding(.horizontal, 18)
+                    .padding(.bottom, 10)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -110,7 +122,7 @@ private struct ProxyPoolRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button {
                     expandedID = isExpanded ? nil : proxy.id
                 } label: {
@@ -174,9 +186,24 @@ private struct ProxyPoolRow: View {
                         .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .accessibilityLabel("Actions for \(proxy.label)")
+
+                Button {
+                    expandedID = isExpanded ? nil : proxy.id
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 20, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "Collapse \(proxy.label)" : "Expand \(proxy.label)")
             }
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 10) {
