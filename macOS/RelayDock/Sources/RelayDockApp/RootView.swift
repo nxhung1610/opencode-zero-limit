@@ -1,30 +1,8 @@
 import RelayDockCore
 import SwiftUI
 
-private enum ProxyAppTab: String, CaseIterable, Identifiable {
-    case routing
-    case pool
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .routing: "Routing"
-        case .pool: "Proxy Pool"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .routing: "arrow.left.arrow.right"
-        case .pool: "list.bullet"
-        }
-    }
-}
-
 struct RootView: View {
     @ObservedObject var model: ProxyAppModel
-    @State private var selectedTab: ProxyAppTab = .routing
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,7 +18,7 @@ struct RootView: View {
 
             Group {
                 if model.state != nil {
-                    if selectedTab == .routing {
+                    if model.selectedTab == .routing {
                         RoutingView(model: model)
                     } else {
                         ProxyPoolView(model: model)
@@ -92,9 +70,9 @@ struct RootView: View {
     }
 
     private func tabButton(_ tab: ProxyAppTab) -> some View {
-        let isSelected = selectedTab == tab
+        let isSelected = model.selectedTab == tab
         return Button {
-            selectedTab = tab
+            model.selectedTab = tab
         } label: {
             VStack(spacing: 5) {
                 Image(systemName: tab.symbol)
