@@ -136,3 +136,26 @@ public func importProxyScriptCacheSnapshots(_ snapshots: [String: String]) {
     }
     ProxyScriptCache.shared.merge(validated)
 }
+
+/// Drops one entry's cached snapshot. RelayDock Edge calls this before a
+/// re-resolve after a dial failure: the provider may already consider the
+/// endpoint dead, while the cached snapshot would otherwise serve it again.
+public func removeProxyScriptCacheSnapshot(for id: String) {
+    ProxyScriptCache.shared.remove(for: id)
+}
+
+/// Provider scripts commonly signal write cooldowns like
+/// `"Con 9s moi co the doi proxy"` (accented Vietnamese: `"Còn 9s mới có thể
+/// đổi proxy"`). Returns the wait in seconds when the message carries one.
+/// Edge uses this to defer the next attempt instead of recording a failed
+/// health check for a throttle that says nothing about the endpoint.
+public func proxyScriptRetryAfterSeconds(from message: String) -> TimeInterval? {
+    let pattern = #"(?:còn|con)\s+(\d+)\s*s"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+    let range = NSRange(message.startIndex..<message.endIndex, in: message)
+    guard let match = regex.firstMatch(in: message, options: [], range: range),
+          match.numberOfRanges > 1,
+          let captured = Range(match.range(at: 1), in: message),
+          let seconds = TimeInterval(message[captured]) else { return nil }
+    return max(1, seconds)
+}

@@ -57,7 +57,7 @@ environment never changes; **RelayDock Edge**, a small local forwarding proxy, m
 decision per new connection. Rotation becomes invisible to consumers.
 
 ```
-terminal ── opencode (env: HTTP_PROXY=http://<token>@127.0.0.1:57211)
+terminal ── opencode (env: HTTP_PROXY=http://<token>:@127.0.0.1:57211)
                   │ CONNECT
                   ▼
             RelayDock Edge  ── reads policy live ──  proxies.json (app writes)
@@ -136,9 +136,12 @@ by Edge instead of at spawn time.
 - Identity is **token-based, not credential-based.** Verified empirically: macOS exposes no usable
   peer credentials for TCP (`LOCAL_PEERPID` is `ENOPROTOOPT`; `LOCAL_PEERCRED` returns success
   without writing the buffer; `LOCAL_PEEREPID` returns 0). The installer writes a random token to
-  `edge.json`; the proxy env carries it as userinfo (`http://<token>@127.0.0.1:<port>`) and admin
-  endpoints require it as a header. Bun already proves the userinfo path end-to-end — the Docker
-  E2E ran the real binary through an authenticated `user:pass@` proxy.
+  `edge.json`; the proxy env carries it as `http://<token>:@127.0.0.1:<port>` and admin
+  endpoints require it as a header. The trailing colon is load-bearing: the Docker E2E verified
+  against the real binary (opencode v2.0.30, Bun) that a `user:` userinfo yields
+  `Proxy-Authorization: Basic base64("<token>:")`, while a bare `user@` userinfo makes its fetch
+  never connect at all. The same binary honors `NO_PROXY` for `localhost`/`127.0.0.1`, so CLI↔service
+  loopback traffic bypasses Edge (control run without `NO_PROXY` was routed through the proxy).
 - `GET http://127.0.0.1:<port>/__relaydock/status` → JSON: mode, upstream (label, masked URL,
   source, resolved/expires at), rotation counters, backoff state, last errors, and active/recent
   tunnels with **peer-process attribution** via a libproc fd scan (same-user only, on demand,
