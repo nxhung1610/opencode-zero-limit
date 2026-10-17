@@ -70,53 +70,78 @@ struct LauncherTests {
         #expect(Launcher.findExecutable(named: "opencode", pathValue: directory.path, skipping: []) == nil)
     }
 
-    // MARK: - Cache file
+    // MARK: - Routing line
 
-    @Test func cacheFileRoundTripsThroughDisk() throws {
-        let state = sandboxState(script: "return \"http://127.0.0.1:1\";")
-        let file = LauncherCacheFile.make(snapshots: ["px_sandbox": "{\"url\":\"http://127.0.0.1:9009\"}"], state: state)
-        let url = FileManager.default.temporaryDirectory.appending(path: "launcher-cache-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        try file.save(to: url)
-        let loaded = LauncherCacheFile.load(from: url)
-        #expect(loaded.snapshots(matching: state) == ["px_sandbox": "{\"url\":\"http://127.0.0.1:9009\"}"])
-        let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
-        #expect(permissions == 0o600)
+    @Test func offModeLineSaysNoProxy() {
+        #expect(Launcher.statusLine(status: nil) == "RelayDock: proxy mode is Off — launching without a proxy")
     }
 
-    @Test func cacheFileRejectsSnapshotsFromAnEditedScript() throws {
-        let snapshot = "{\"url\":\"http://127.0.0.1:9009\"}"
-        let before = sandboxState(script: "return \"http://127.0.0.1:1\";")
-        let file = LauncherCacheFile.make(snapshots: ["px_sandbox": snapshot], state: before)
-        let after = sandboxState(script: "return \"http://127.0.0.1:2\";")
-        #expect(file.snapshots(matching: after).isEmpty)
-    }
-
-    @Test func cacheFileDropsEntriesThatLeftThePool() throws {
-        let file = LauncherCacheFile.make(
-            snapshots: ["px_gone": "{\"url\":\"http://x:1\"}"],
-            state: ProxyState(mode: .auto, proxies: [])
+    @Test func lineNamesTheResolvedUpstreamWhenWarm() {
+        let status = EdgeStatusResponse(
+            pid: 42,
+            port: 57211,
+            mode: .auto,
+            upstream: .init(
+                entryID: "px_1",
+                label: "Sandbox",
+                maskedURL: "•••@127.0.0.1:9009",
+                source: "script",
+                resolvedAt: 0
+            ),
+            launchedAt: 0
         )
-        #expect(file.entries.isEmpty)
+        let line = Launcher.statusLine(status: status)
+        #expect(line.contains("Edge on 127.0.0.1:57211"))
+        #expect(line.contains("Sandbox"))
+        #expect(line.contains("•••@127.0.0.1:9009"))
     }
 
-    @Test func damagedOrMissingCacheFileLoadsEmpty() throws {
-        let url = FileManager.default.temporaryDirectory.appending(path: "launcher-cache-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try Data("not json".utf8).write(to: url)
-        #expect(LauncherCacheFile.load(from: url).entries.isEmpty)
-        #expect(LauncherCacheFile.load(from: url.appendingPathExtension("missing")).entries.isEmpty)
+    @Test func lineReportsAnActiveProviderCooldown() {
+        let status = EdgeStatusResponse(
+            pid: 42,
+            port: 57211,
+            mode: .auto,
+            throttleRetryAt: Date().timeIntervalSince1970 + 30,
+            launchedAt: 0
+        )
+        let line = Launcher.statusLine(status: status)
+        #expect(line.contains("cooldown"))
+    }
+
+    @Test func lineSaysTheFirstRequestResolvesTheUpstream() {
+        let status = EdgeStatusResponse(pid: 42, port: 57211, mode: .manual, launchedAt: 0)
+        let line = Launcher.statusLine(status: status)
+        #expect(line.contains("Manual"))
+        #expect(line.contains("first request resolves the upstream"))
+    }
+
+    // MARK: - Edge binary discovery
+
+    @Test func edgeBinaryOverrideMustBeExecutable() throws {
+        let fixture = try EdgeBinaryFixture()
+        defer { fixture.cleanUp() }
+        let found = try EdgeClient.locateEdgeBinary(environment: ["RELAYDOCK_EDGE_BINARY": fixture.edgePath])
+        #expect(found == fixture.edgePath)
+
+        #expect(throws: EdgeClient.EdgeUnavailableError.self) {
+            _ = try EdgeClient.locateEdgeBinary(environment: ["RELAYDOCK_EDGE_BINARY": fixture.nonExecutablePath])
+        }
+    }
+
+    @Test func findsTheEdgeBinaryInPath() throws {
+        let fixture = try EdgeBinaryFixture()
+        defer { fixture.cleanUp() }
+        let found = try EdgeClient.locateEdgeBinary(environment: ["PATH": fixture.directory.path])
+        #expect(found == fixture.edgePath)
+    }
+
+    @Test func missingEdgeBinaryFailsClosed() {
+        #expect(throws: EdgeClient.EdgeUnavailableError.self) {
+            _ = try EdgeClient.locateEdgeBinary(environment: ["PATH": "/nonexistent-relaydock-fixture"])
+        }
     }
 
     // MARK: - Fixtures
-
-    private func sandboxState(script: String) -> ProxyState {
-        ProxyState(
-            mode: .auto,
-            proxies: [ProxyEntry(id: "px_sandbox", label: "Sandbox", url: "", script: script)]
-        )
-    }
 
     private struct ExecutableFixture {
         let root: URL
@@ -149,6 +174,28 @@ struct LauncherTests {
 
         func cleanUp() {
             try? FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private struct EdgeBinaryFixture {
+        let directory: URL
+        let edgePath: String
+        let nonExecutablePath: String
+
+        init() throws {
+            let manager = FileManager.default
+            directory = manager.temporaryDirectory.appending(path: "edge-binary-\(UUID().uuidString)", directoryHint: .isDirectory)
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+            edgePath = directory.appending(path: "relaydock-edge").path
+            manager.createFile(atPath: edgePath, contents: Data("#!/bin/sh\nexit 0\n".utf8))
+            try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: edgePath)
+            nonExecutablePath = directory.appending(path: "not-executable").path
+            manager.createFile(atPath: nonExecutablePath, contents: Data("plain".utf8))
+            try manager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: nonExecutablePath)
+        }
+
+        func cleanUp() {
+            try? FileManager.default.removeItem(at: directory)
         }
     }
 }

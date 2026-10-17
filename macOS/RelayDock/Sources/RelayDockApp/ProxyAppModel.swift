@@ -150,9 +150,22 @@ final class ProxyAppModel: ObservableObject {
         guard !isTesting, state != nil else { return }
         isTesting = true
         defer { isTesting = false }
+        // RelayDock Edge owns the live script cache. Share the file so a
+        // check here never re-fetches a snapshot Edge resolved (and never trips
+        // the provider's cooldown for Edge's next rotation), then merge what
+        // this check learned back so Edge reuses it too. In P2 the app reads
+        // Edge's status directly and this file becomes an implementation
+        // detail of Edge.
+        let cacheFileURL = store.fileURL.deletingLastPathComponent().appending(path: ScriptCacheFile.fileName)
+        if let current = state {
+            importProxyScriptCacheSnapshots(ScriptCacheFile.load(from: cacheFileURL).snapshots(matching: current))
+        }
         do {
-            state = try await store.checkAll()
+            let checked = try await store.checkAll()
+            state = checked
             errorMessage = nil
+            let exported = ScriptCacheFile.make(snapshots: exportProxyScriptCacheSnapshots(), state: checked)
+            try? ScriptCacheFile.load(from: cacheFileURL).merged(with: exported).save(to: cacheFileURL)
         } catch {
             errorMessage = error.localizedDescription
         }

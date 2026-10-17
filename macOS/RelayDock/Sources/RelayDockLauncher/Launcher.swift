@@ -45,6 +45,8 @@ enum Launcher {
             fail(LauncherError.commandNotFound(target.command).localizedDescription)
         }
 
+        // Off short-circuit: no proxy environment, and Edge is never contacted
+        // (it may not even be running).
         let store = ProxyStore(environment: environment)
         let state: ProxyState
         do {
@@ -52,30 +54,43 @@ enum Launcher {
         } catch {
             fail(error.localizedDescription)
         }
-
-        // Every launch is a fresh process, so the in-memory script cache cannot
-        // bridge launches on its own. Persist it next to proxies.json: without
-        // the file a script that caches its proxy would call its provider on
-        // every launch and trip provider rate limits.
-        let cacheFileURL = store.fileURL.deletingLastPathComponent().appending(path: "launcher-cache.json")
-        importProxyScriptCacheSnapshots(LauncherCacheFile.load(from: cacheFileURL).snapshots(matching: state))
-
-        let proxyURL: String?
-        do {
-            proxyURL = try store.selectForSpawn()
-        } catch {
-            fail("\(error.localizedDescription) \(target.command) was not started; fix the proxy pool or switch the mode to Off in RelayDock.")
+        if state.mode == .off {
+            if environment["RELAYDOCK_QUIET"] != "1" {
+                writeError(statusLine(status: nil))
+            }
+            replaceProcess(
+                executable: executable,
+                arguments: [executable] + target.arguments,
+                environment: buildOpenCodeProxyEnvironment(proxyURL: nil, base: environment)
+            )
         }
-        try? LauncherCacheFile.make(snapshots: exportProxyScriptCacheSnapshots(), state: state).save(to: cacheFileURL)
+
+        // Manual/Auto: every wrapped process holds the same constant Edge
+        // environment. Edge resolves the upstream, rotates it live, and fails
+        // closed — nothing here is fixed at spawn time.
+        let configURL = EdgeConfigFile.fileURL(environment: environment)
+        guard let config = EdgeConfigFile.load(from: configURL) else {
+            fail(
+                "RelayDock Edge is not configured (\(configURL.path) is missing). "
+                + "Run scripts/opencode-wrapper.sh install, then relaunch. \(target.command) was not started."
+            )
+        }
+
+        let status: EdgeStatusResponse
+        do {
+            status = try EdgeClient.ensureRunning(config: config, environment: environment)
+        } catch {
+            fail("\(error.localizedDescription) \(target.command) was not started.")
+        }
 
         if environment["RELAYDOCK_QUIET"] != "1" {
-            writeError(statusLine(proxyURL: proxyURL, store: store))
+            writeError(statusLine(status: status))
         }
 
         replaceProcess(
             executable: executable,
             arguments: [executable] + target.arguments,
-            environment: buildOpenCodeProxyEnvironment(proxyURL: proxyURL, base: environment)
+            environment: buildOpenCodeProxyEnvironment(proxyURL: config.proxyURL, base: environment)
         )
     }
 
@@ -190,20 +205,19 @@ enum Launcher {
     /// What the launcher reports on stderr before starting the command. It
     /// names the environment it configured — it cannot verify the child's
     /// traffic.
-    static func statusLine(proxyURL: String?, store: ProxyStore) -> String {
-        guard let proxyURL else {
+    static func statusLine(status: EdgeStatusResponse?) -> String {
+        guard let status else {
             return "RelayDock: proxy mode is Off — launching without a proxy"
         }
-        var label: String?
-        if let latest = try? store.load() {
-            let selectedID = latest.mode == .manual ? latest.manualId : latest.bindings["default"]
-            label = selectedID.flatMap { id in latest.proxies.first { $0.id == id }?.label }
+        let edge = "Edge on 127.0.0.1:\(status.port)"
+        if let upstream = status.upstream {
+            return "RelayDock: routed via \(edge) — \(upstream.label) (\(upstream.maskedURL))"
         }
-        let target = maskedProxyURL(proxyURL)
-        if let label, !label.isEmpty {
-            return "RelayDock: routed via \(label) (\(target))"
+        if let retryAt = status.throttleRetryAt, retryAt > Date().timeIntervalSince1970 {
+            return "RelayDock: routed via \(edge) — a provider cooldown is active; the first request retries when it lifts"
         }
-        return "RelayDock: routed via \(target)"
+        let mode = status.mode == .manual ? "Manual" : "Auto"
+        return "RelayDock: routed via \(edge) — \(mode) mode; the first request resolves the upstream"
     }
 
     private static let usageText = """
@@ -215,8 +229,10 @@ enum Launcher {
       ~/.local/bin/opencode) and invoke the command normally.
 
     The command runs with the proxy environment RelayDock selects. Off mode
-    runs it without a proxy; Manual and Auto selection errors stop the launch.
-    Set RELAYDOCK_QUIET=1 to suppress the routing line.
+    runs it without a proxy; Manual and Auto route through the local RelayDock
+    Edge daemon (started on demand), which resolves and rotates the upstream
+    live. If Edge is missing or cannot start, the launch stops instead of
+    going direct. Set RELAYDOCK_QUIET=1 to suppress the routing line.
     """
 
     private static func writeError(_ message: String) {

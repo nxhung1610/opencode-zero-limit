@@ -385,53 +385,20 @@ public struct ProxyStore: Sendable {
     }
 
     /// Returns nil only for explicit Off mode. Auto and Manual always fail closed.
+    /// The policy itself lives in `resolveSpawnRoute(state:accountID:bindings:)`
+    /// so live consumers (RelayDock Edge) execute the same rules without
+    /// writing this store.
     public func selectForSpawn(accountID: String = "default") throws -> String? {
         var state = try load()
-        if state.mode == .off { return nil }
-        if state.mode == .manual {
-            guard let selected = state.proxies.first(where: { $0.id == state.manualId }) else {
-                throw ProxyStoreError.noManualSelection
-            }
-            guard selected.enabled else { throw ProxyStoreError.manualSelectionDisabled(selected.label) }
-            guard selected.hasValidDefinition else {
-                throw ProxyStoreError.invalidProxyConfiguration(selected.label)
-            }
-            return try resolveSpawnURL(selected)
+        guard let route = try resolveSpawnRoute(state: state, accountID: accountID, bindings: state.bindings) else {
+            return nil
         }
-
-        let enabled = state.enabledProxies
-        guard !enabled.isEmpty else { throw ProxyStoreError.autoHasNoEnabledProxy }
-        let valid = state.validEnabledProxies
-        guard !valid.isEmpty else { throw ProxyStoreError.autoHasNoValidProxy }
-        let usable = state.autoEligibleProxies
-        guard !usable.isEmpty else { throw ProxyStoreError.autoHasNoHealthyProxy }
-        if let boundID = state.bindings[accountID], let bound = usable.first(where: { $0.id == boundID }) {
-            return try resolveSpawnURL(bound)
+        if route.isNewBinding {
+            state.bindings[accountID] = route.entryID
+            // A failed sticky-binding write must not turn an already-selected proxy into a direct launch.
+            _ = try? save(state)
         }
-        let usedIDs = Set(state.bindings.values)
-        let chosen = usable.first(where: { !usedIDs.contains($0.id) }) ?? usable[0]
-        state.bindings[accountID] = chosen.id
-        // A failed sticky-binding write must not turn an already-selected proxy into a direct launch.
-        _ = try? save(state)
-        return try resolveSpawnURL(chosen)
-    }
-
-    /// Turns a selected entry into the concrete proxy URL for the child
-    /// process. Custom scripts run here; any failure keeps the launch
-    /// fail-closed instead of silently going direct. Scripts share a
-    /// per-entry memory cache across runs in this process.
-    private func resolveSpawnURL(_ entry: ProxyEntry) throws -> String {
-        if let script = entry.script {
-            do {
-                return try ProxyScriptRunner.resolve(script, cacheID: entry.id)
-            } catch {
-                throw ProxyStoreError.scriptFailed(entry.label, error.localizedDescription)
-            }
-        }
-        guard parseProxyImportLine(entry.url) == entry.url else {
-            throw ProxyStoreError.invalidProxyConfiguration(entry.label)
-        }
-        return entry.url
+        return route.proxyURL
     }
 
     /// Runs one health check. Custom scripts resolve to a concrete URL first
@@ -453,6 +420,75 @@ public struct ProxyStore: Sendable {
             ))
         }
     }
+}
+
+/// The concrete route a new consumer should get under `selectForSpawn`'s
+/// policy: the chosen entry, its resolved proxy URL, and whether the caller
+/// should persist `bindings[accountID] = entryID`.
+public struct SpawnRoute: Equatable, Sendable {
+    public let entryID: String
+    public let proxyURL: String
+    public let isNewBinding: Bool
+
+    public init(entryID: String, proxyURL: String, isNewBinding: Bool) {
+        self.entryID = entryID
+        self.proxyURL = proxyURL
+        self.isNewBinding = isNewBinding
+    }
+}
+
+/// Pure selection policy shared by spawn-time consumers and live consumers
+/// (RelayDock Edge). nil means explicit Off mode; Manual and Auto fail closed
+/// with `ProxyStoreError`, exactly like `selectForSpawn`. `bindings` is the
+/// caller's view of sticky account bindings — the caller persists the update
+/// when `isNewBinding` is set.
+public func resolveSpawnRoute(
+    state: ProxyState,
+    accountID: String,
+    bindings: [String: String]
+) throws -> SpawnRoute? {
+    if state.mode == .off { return nil }
+    if state.mode == .manual {
+        guard let selected = state.proxies.first(where: { $0.id == state.manualId }) else {
+            throw ProxyStoreError.noManualSelection
+        }
+        guard selected.enabled else { throw ProxyStoreError.manualSelectionDisabled(selected.label) }
+        guard selected.hasValidDefinition else {
+            throw ProxyStoreError.invalidProxyConfiguration(selected.label)
+        }
+        return SpawnRoute(entryID: selected.id, proxyURL: try resolveProxyEntryURL(selected), isNewBinding: false)
+    }
+
+    let enabled = state.enabledProxies
+    guard !enabled.isEmpty else { throw ProxyStoreError.autoHasNoEnabledProxy }
+    let valid = state.validEnabledProxies
+    guard !valid.isEmpty else { throw ProxyStoreError.autoHasNoValidProxy }
+    let usable = state.autoEligibleProxies
+    guard !usable.isEmpty else { throw ProxyStoreError.autoHasNoHealthyProxy }
+    if let boundID = bindings[accountID], let bound = usable.first(where: { $0.id == boundID }) {
+        return SpawnRoute(entryID: bound.id, proxyURL: try resolveProxyEntryURL(bound), isNewBinding: false)
+    }
+    let usedIDs = Set(bindings.values)
+    let chosen = usable.first(where: { !usedIDs.contains($0.id) }) ?? usable[0]
+    return SpawnRoute(entryID: chosen.id, proxyURL: try resolveProxyEntryURL(chosen), isNewBinding: true)
+}
+
+/// Turns a selected entry into the concrete proxy URL for a consumer. Custom
+/// scripts run here; any failure keeps the consumer fail-closed instead of
+/// silently going direct. Scripts share a per-entry memory cache across runs
+/// in this process.
+public func resolveProxyEntryURL(_ entry: ProxyEntry) throws -> String {
+    if let script = entry.script {
+        do {
+            return try ProxyScriptRunner.resolve(script, cacheID: entry.id)
+        } catch {
+            throw ProxyStoreError.scriptFailed(entry.label, error.localizedDescription)
+        }
+    }
+    guard parseProxyImportLine(entry.url) == entry.url else {
+        throw ProxyStoreError.invalidProxyConfiguration(entry.label)
+    }
+    return entry.url
 }
 
 public func parseProxyImportLine(_ value: String) -> String? {
