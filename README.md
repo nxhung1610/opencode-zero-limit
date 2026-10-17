@@ -86,6 +86,14 @@ Each launch:
 - Stops with exit code 1 instead of starting the command when Manual/Auto selection fails — no silent direct fallback. Off mode launches the command without proxy variables.
 - Reuses each script entry's provider result across launches through `<config>/launcher-cache.json` (snapshots are keyed to the script hash, so editing a script drops its stale cache). The app keeps its own in-memory cache; the wrapper's file cache is separate.
 
+OpenCode's background service — not the CLI you start — performs model calls using the environment it was started with. After installing the wrapper (and whenever the resolved endpoint changes), restart the service from a wrapped shell so it picks up the proxy environment:
+
+```sh
+opencode service stop && opencode service start   # interrupts active sessions
+```
+
+Without that step an already-running service keeps its old environment; a cold start (no service running) inherits the wrapper's environment automatically. `opencode service restart` respawns the service without your shell environment — use stop + start.
+
 The wrapper only affects commands started after it is installed; already-running processes and the app are untouched. Verify a launch independently (the routing line reports the environment the wrapper set, not verified traffic):
 
 ```sh

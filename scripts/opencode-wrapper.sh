@@ -48,6 +48,9 @@ install() {
   report_path_order
   cat <<'HINT'
 
+Apply routing to OpenCode's background service (it performs model calls):
+  opencode service stop && opencode service start   # interrupts active sessions
+
 Verify a launch independently (the app's honesty note still applies — the
 routing line reports the environment the wrapper set, not verified traffic):
   ps eww -p <opencode pid> | tr ' ' '\n' | grep -i proxy
