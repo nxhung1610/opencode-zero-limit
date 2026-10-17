@@ -36,6 +36,25 @@ enum EdgeCheckScope: Sendable {
     case entries([String])
 }
 
+/// How an established upstream tunnel ended badly after its dial succeeded.
+enum EdgeTunnelFailure: Equatable, Sendable {
+    /// The upstream side errored mid-session (reset or abort after the
+    /// tunnel was up).
+    case died
+    /// Request bytes reached the upstream, not a single response byte came
+    /// back, and the client gave up after the stall window.
+    case stalled(duration: TimeInterval)
+
+    var summary: String {
+        switch self {
+        case .died:
+            "tunnel died mid-stream"
+        case .stalled(let duration):
+            "zero-byte stall (\(Int(duration))s)"
+        }
+    }
+}
+
 /// All mutable Edge state and the routing policy. A single actor serializes
 /// decisions; the operations that can block for seconds (script runs, health
 /// checks) hop to detached tasks so no connection ever waits behind them.
@@ -87,6 +106,7 @@ actor EdgeDaemon {
     private var resolutions = 0
     private var switches = 0
     private var dialFailures = 0
+    private var streamFailures = 0
     private var tunnelsTotal = 0
     private var lastDialFailureAt: Double = 0
     private var tunnelsActive: [UInt16: TunnelRecord] = [:]
@@ -250,6 +270,15 @@ actor EdgeDaemon {
     }
 
     func refusalReason() -> String? { pendingReason }
+
+    /// Seconds a refused client should wait before retrying, while the
+    /// policy sits inside a timed provider cooldown. Nil when no timed wait
+    /// applies — the absence of the header means "retry whenever".
+    func refusalRetryAfter() -> TimeInterval? {
+        let now = Date().timeIntervalSince1970
+        guard let retryAt = throttleRetryAt, retryAt > now else { return nil }
+        return retryAt - now
+    }
 
     @discardableResult
     private func resolveLocked(state: ProxyState) async -> ResolveOutcome? {
@@ -415,6 +444,35 @@ actor EdgeDaemon {
         if var current = upstream, current.strikes > 0 {
             current.strikes = 0
             upstream = current
+        }
+    }
+
+    /// An established upstream tunnel died mid-stream or stalled. The same
+    /// policy signal as a failed dial — count it, drop the cached snapshot,
+    /// re-resolve so the next connection leaves the bad endpoint — except
+    /// this request can never be retried: bytes are already in flight. When
+    /// a re-resolve already replaced the upstream (entryID no longer
+    /// current), only the counter and the log record it.
+    func noteTunnelFailure(entryID: String, failure: EdgeTunnelFailure) async {
+        streamFailures += 1
+        let label = upstream?.entryID == entryID ? (upstream?.label ?? entryID) : entryID
+        pushError("tunnel failed via \(label): \(failure.summary)")
+        log.warn("tunnel failed via \(label): \(failure.summary)")
+        guard upstream?.entryID == entryID else { return }
+        let now = Date().timeIntervalSince1970
+        let windowOpen = now - lastDialFailureAt <= 30
+        lastDialFailureAt = now
+        if var current = upstream {
+            current.strikes = windowOpen ? current.strikes + 1 : 1
+            upstream = current
+            removeProxyScriptCacheSnapshot(for: current.entryID)
+        }
+        // Re-verify the provider soon through a fresh endpoint: the health
+        // probe exercises a full request through the proxy, so a zombie
+        // provider cannot hide behind an open-but-silent tunnel.
+        nextCheckAt[entryID] = min(nextCheckAt[entryID] ?? .greatestFiniteMagnitude, now + 30)
+        if let state = loadState(), state.mode != .off {
+            _ = await resolveLocked(state: state)
         }
     }
 
@@ -634,6 +692,7 @@ actor EdgeDaemon {
                 resolutions: resolutions,
                 switches: switches,
                 dialFailures: dialFailures,
+                streamFailures: streamFailures,
                 tunnelsTotal: tunnelsTotal,
                 tunnelsActive: tunnelsActive.count
             ),

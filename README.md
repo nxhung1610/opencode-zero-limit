@@ -26,6 +26,7 @@ scripts/build-macos-app.sh
 open build/RelayDock.app
 scripts/build-launcher.sh         # PATH wrapper + Edge daemon binaries → build/relaydock-launch, build/relaydock-edge
 scripts/launcher-sandbox-test.sh  # hermetic end-to-end: stub command, fake provider/proxies, real launcher + Edge
+scripts/tps-bench.sh              # A/B TPS: wrapped (via Edge) vs direct, read back from OpenCode's database
 ```
 
 The app is currently unsigned and not notarized for public distribution.
