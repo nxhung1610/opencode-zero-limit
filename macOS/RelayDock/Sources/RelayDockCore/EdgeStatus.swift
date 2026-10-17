@@ -45,6 +45,10 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
         public var resolutions: Int
         public var switches: Int
         public var dialFailures: Int
+        /// Established tunnels the upstream dropped mid-stream or left
+        /// silent until the client gave up. Added after protocol 1 shipped;
+        /// decoding tolerates its absence in older Edge binaries.
+        public var streamFailures: Int
         public var tunnelsTotal: Int
         public var tunnelsActive: Int
 
@@ -52,14 +56,26 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
             resolutions: Int = 0,
             switches: Int = 0,
             dialFailures: Int = 0,
+            streamFailures: Int = 0,
             tunnelsTotal: Int = 0,
             tunnelsActive: Int = 0
         ) {
             self.resolutions = resolutions
             self.switches = switches
             self.dialFailures = dialFailures
+            self.streamFailures = streamFailures
             self.tunnelsTotal = tunnelsTotal
             self.tunnelsActive = tunnelsActive
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            resolutions = try container.decode(Int.self, forKey: .resolutions)
+            switches = try container.decode(Int.self, forKey: .switches)
+            dialFailures = try container.decode(Int.self, forKey: .dialFailures)
+            streamFailures = try container.decodeIfPresent(Int.self, forKey: .streamFailures) ?? 0
+            tunnelsTotal = try container.decode(Int.self, forKey: .tunnelsTotal)
+            tunnelsActive = try container.decode(Int.self, forKey: .tunnelsActive)
         }
     }
 

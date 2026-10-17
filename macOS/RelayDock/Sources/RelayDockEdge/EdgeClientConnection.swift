@@ -118,7 +118,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             do {
                 let tunnel = try await EdgeDialer.openDirect(toHost: host, port: port)
                 try await sendConnectEstablished()
-                try await relay(to: tunnel, clientPrelude: clientPrelude, label: nil)
+                try await relay(to: tunnel, clientPrelude: clientPrelude, upstreamEntryID: nil, label: nil)
             } catch {
                 try await sendSimple(
                     status: 502, reason: "Bad Gateway",
@@ -131,13 +131,27 @@ final class EdgeClientConnection: @unchecked Sendable {
             }
             if let dialed {
                 try await sendConnectEstablished()
-                try await relay(to: dialed.tunnel, clientPrelude: clientPrelude, label: dialed.upstream.label)
+                try await relay(
+                    to: dialed.tunnel,
+                    clientPrelude: clientPrelude,
+                    upstreamEntryID: dialed.upstream.entryID,
+                    label: dialed.upstream.label
+                )
             } else {
                 let reason = await daemon.refusalReason() ?? "no usable upstream resolved"
-                try await sendSimple(status: 502, reason: "Bad Gateway", body: "RelayDock Edge: \(reason)")
+                let retryAfter = await daemon.refusalRetryAfter()
+                try await sendSimple(
+                    status: 502, reason: "Bad Gateway",
+                    body: "RelayDock Edge: \(reason)",
+                    extraHeaders: Self.retryAfterHeaders(retryAfter)
+                )
             }
-        case .refuse(let reason, _):
-            try await sendSimple(status: 502, reason: "Bad Gateway", body: "RelayDock Edge: \(reason)")
+        case .refuse(let reason, let retryAt):
+            try await sendSimple(
+                status: 502, reason: "Bad Gateway",
+                body: "RelayDock Edge: \(reason)",
+                extraHeaders: Self.retryAfterHeaders(retryAt.map { $0 - Date().timeIntervalSince1970 })
+            )
         }
     }
 
@@ -167,7 +181,7 @@ final class EdgeClientConnection: @unchecked Sendable {
                 let head = request.originForwardHead(upstreamAuthorization: nil)
                 try await tunnel.socket.send(head)
                 if !clientPrelude.isEmpty { try await tunnel.socket.send(clientPrelude) }
-                try await relay(to: tunnel, clientPrelude: Data(), label: nil)
+                try await relay(to: tunnel, clientPrelude: Data(), upstreamEntryID: nil, label: nil)
             } catch {
                 try await sendSimple(
                     status: 502, reason: "Bad Gateway",
@@ -181,13 +195,28 @@ final class EdgeClientConnection: @unchecked Sendable {
                 )
             }
             if let dialed {
-                try await relay(to: dialed.tunnel, clientPrelude: Data(), label: dialed.upstream.label)
+                try await relay(
+                    to: dialed.tunnel,
+                    clientPrelude: Data(),
+                    upstreamEntryID: dialed.upstream.entryID,
+                    label: dialed.upstream.label,
+                    requestSent: true
+                )
             } else {
                 let reason = await daemon.refusalReason() ?? "no usable upstream resolved"
-                try await sendSimple(status: 502, reason: "Bad Gateway", body: "RelayDock Edge: \(reason)")
+                let retryAfter = await daemon.refusalRetryAfter()
+                try await sendSimple(
+                    status: 502, reason: "Bad Gateway",
+                    body: "RelayDock Edge: \(reason)",
+                    extraHeaders: Self.retryAfterHeaders(retryAfter)
+                )
             }
-        case .refuse(let reason, _):
-            try await sendSimple(status: 502, reason: "Bad Gateway", body: "RelayDock Edge: \(reason)")
+        case .refuse(let reason, let retryAt):
+            try await sendSimple(
+                status: 502, reason: "Bad Gateway",
+                body: "RelayDock Edge: \(reason)",
+                extraHeaders: Self.retryAfterHeaders(retryAt.map { $0 - Date().timeIntervalSince1970 })
+            )
         }
     }
 
@@ -251,12 +280,20 @@ final class EdgeClientConnection: @unchecked Sendable {
 
     // MARK: - Relay
 
-    private func relay(to tunnel: EdgeUpstreamTunnel, clientPrelude: Data, label: String?) async throws {
+    private func relay(
+        to tunnel: EdgeUpstreamTunnel,
+        clientPrelude: Data,
+        upstreamEntryID: String?,
+        label: String?,
+        requestSent: Bool = false
+    ) async throws {
         await daemon.registerTunnel(
             clientPort: clientPort,
             edgePort: UInt16(truncatingIfNeeded: config.port),
             label: label
         )
+        let startedAt = Date().timeIntervalSince1970
+        let end = EdgeRelayEndHolder()
         let counts = await withTaskGroup(
             of: (up: Int, down: Int).self,
             returning: (up: Int, down: Int).self
@@ -264,22 +301,37 @@ final class EdgeClientConnection: @unchecked Sendable {
             group.addTask {
                 // Client -> upstream.
                 var up = 0
-                do {
-                    if !clientPrelude.isEmpty {
+                if !clientPrelude.isEmpty {
+                    do {
                         try await tunnel.socket.send(clientPrelude)
                         up += clientPrelude.count
+                    } catch {
+                        end.record(.upstreamDied)
                     }
+                }
+                if end.value == nil {
                     while true {
-                        let (data, isComplete) = try await self.socket.receiveSome()
-                        if !data.isEmpty {
-                            try await tunnel.socket.send(data)
-                            up += data.count
+                        let step: (data: Data, isComplete: Bool)
+                        do {
+                            step = try await self.socket.receiveSome()
+                        } catch {
+                            end.record(.clientClosed)
+                            break
                         }
-                        if isComplete { break }
+                        if !step.data.isEmpty {
+                            do {
+                                try await tunnel.socket.send(step.data)
+                                up += step.data.count
+                            } catch {
+                                end.record(.upstreamDied)
+                                break
+                            }
+                        }
+                        if step.isComplete {
+                            end.record(.clientClosed)
+                            break
+                        }
                     }
-                } catch {
-                    // Either side ended or errored; the other direction is
-                    // cancelled below so both pump tasks finish.
                 }
                 tunnel.socket.cancel()
                 return (up, 0)
@@ -287,20 +339,37 @@ final class EdgeClientConnection: @unchecked Sendable {
             group.addTask {
                 // Upstream -> client.
                 var down = 0
-                do {
-                    if !tunnel.initialData.isEmpty {
+                if !tunnel.initialData.isEmpty {
+                    do {
                         try await self.socket.send(tunnel.initialData)
                         down += tunnel.initialData.count
+                    } catch {
+                        end.record(.clientClosed)
                     }
+                }
+                if end.value == nil {
                     while true {
-                        let (data, isComplete) = try await tunnel.socket.receiveSome()
-                        if !data.isEmpty {
-                            try await self.socket.send(data)
-                            down += data.count
+                        let step: (data: Data, isComplete: Bool)
+                        do {
+                            step = try await tunnel.socket.receiveSome()
+                        } catch {
+                            end.record(.upstreamDied)
+                            break
                         }
-                        if isComplete { break }
+                        if !step.data.isEmpty {
+                            do {
+                                try await self.socket.send(step.data)
+                                down += step.data.count
+                            } catch {
+                                end.record(.clientClosed)
+                                break
+                            }
+                        }
+                        if step.isComplete {
+                            end.record(.upstreamClosed)
+                            break
+                        }
                     }
-                } catch {
                 }
                 self.socket.cancel()
                 return (0, down)
@@ -313,6 +382,22 @@ final class EdgeClientConnection: @unchecked Sendable {
             return total
         }
         await daemon.finishTunnel(clientPort: clientPort, bytesUp: counts.up, bytesDown: counts.down)
+        guard let upstreamEntryID else { return }
+        let duration = Date().timeIntervalSince1970 - startedAt
+        switch EdgeRelayPolicy.verdict(
+            end: end.value ?? .clientClosed,
+            requestSent: requestSent,
+            bytesUp: counts.up,
+            bytesDown: counts.down,
+            duration: duration
+        ) {
+        case .clean:
+            break
+        case .died:
+            await daemon.noteTunnelFailure(entryID: upstreamEntryID, failure: .died)
+        case .stalled(let stallDuration):
+            await daemon.noteTunnelFailure(entryID: upstreamEntryID, failure: .stalled(duration: stallDuration))
+        }
     }
 
     // MARK: - Responses
@@ -328,6 +413,13 @@ final class EdgeClientConnection: @unchecked Sendable {
         )
         response.append(payload)
         try await socket.send(response)
+    }
+
+    /// `Retry-After: <seconds>` for a 502 whose cause carries a known
+    /// cooldown. Integer seconds per RFC 9110; sub-second waits round up.
+    static func retryAfterHeaders(_ seconds: TimeInterval?) -> [String] {
+        guard let seconds, seconds > 0 else { return [] }
+        return ["Retry-After: \(max(1, Int(seconds.rounded(.up))))"]
     }
 
     private func sendSimple(
@@ -346,6 +438,67 @@ final class EdgeClientConnection: @unchecked Sendable {
         var response = Data(head.utf8)
         response.append(payload)
         try await socket.send(response)
+    }
+}
+
+// MARK: - Relay outcome policy
+
+/// Which side ended a relay session first. Recorded once per session so an
+/// induced error from the peer's cancellation is never mistaken for a fresh
+/// upstream problem.
+enum EdgeRelayEnd: Equatable, Sendable {
+    /// The client closed or errored out first.
+    case clientClosed
+    /// The upstream closed the tunnel cleanly.
+    case upstreamClosed
+    /// The upstream socket errored mid-session.
+    case upstreamDied
+}
+
+/// What a finished relay session says about the upstream.
+enum EdgeRelayVerdict: Equatable, Sendable {
+    case clean
+    case died
+    case stalled(duration: TimeInterval)
+}
+
+enum EdgeRelayPolicy {
+    /// A tunnel that moved request bytes but never received a single
+    /// response byte for this long was not doing useful work: the client
+    /// almost certainly gave up on a zombie endpoint. TLS alone would have
+    /// produced response bytes, so silence this long is a strong signal.
+    static let stallThreshold: TimeInterval = 30
+
+    static func verdict(
+        end: EdgeRelayEnd,
+        requestSent: Bool,
+        bytesUp: Int,
+        bytesDown: Int,
+        duration: TimeInterval
+    ) -> EdgeRelayVerdict {
+        if end == .upstreamDied { return .died }
+        if bytesDown == 0, requestSent || bytesUp > 0, duration >= stallThreshold {
+            return .stalled(duration: duration)
+        }
+        return .clean
+    }
+}
+
+/// First-wins latch for the relay's end classification.
+private final class EdgeRelayEndHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: EdgeRelayEnd?
+
+    func record(_ value: EdgeRelayEnd) {
+        lock.lock()
+        if stored == nil { stored = value }
+        lock.unlock()
+    }
+
+    var value: EdgeRelayEnd? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
 
