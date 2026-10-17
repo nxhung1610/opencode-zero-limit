@@ -228,6 +228,16 @@ else
   pass "stderr is empty with RELAYDOCK_QUIET=1"
 fi
 
+echo "== scenario 7: the command replaces the launcher (terminal job control) =="
+# A child in its own process group is SIGTTIN-stopped when a full-screen TUI
+# reads the terminal. The launcher must exec the command instead, so the
+# process (pid) and its foreground group survive.
+RELAYDOCK_CONFIG_DIR="$CONFIG" bash -c 'set -m; "$1" sh -c "echo \$\$" > "$2/replace-child.pid" & JOB=$!; wait "$JOB"; echo "$JOB" > "$2/replace-job.pid"' _ "$LAUNCHER" "$WORK"
+check "command runs as the launcher process (same pid)" test "$(cat "$WORK/replace-child.pid")" = "$(cat "$WORK/replace-job.pid")"
+PTY_OUTPUT="$(RELAYDOCK_CONFIG_DIR="$CONFIG" PATH="$LINK_DIRECTORY:$STUB_DIRECTORY:/usr/bin:/bin:/usr/sbin:/sbin" \
+  script -q /dev/null "$LAUNCHER" sh -c 'PG=$(ps -o pgid= -p $$ | tr -d " "); TP=$(ps -o tpgid= -p $$ | tr -d " "); if [ "$PG" = "$TP" ]; then echo FOREGROUND; else echo BACKGROUND; fi' 2>/dev/null | tr -d "\r")"
+check "command keeps the terminal foreground group" grep -q FOREGROUND <<< "$PTY_OUTPUT"
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All sandbox checks passed."

@@ -72,20 +72,30 @@ enum Launcher {
             writeError(statusLine(proxyURL: proxyURL, store: store))
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = target.arguments
-        process.environment = buildOpenCodeProxyEnvironment(proxyURL: proxyURL, base: environment)
-        do {
-            try process.run()
-        } catch {
-            fail("could not run \(executable): \(error.localizedDescription)")
-        }
-        process.waitUntilExit()
-        if process.terminationReason == .uncaughtSignal {
-            exit(128 + process.terminationStatus)
-        }
-        exit(process.terminationStatus)
+        replaceProcess(
+            executable: executable,
+            arguments: [executable] + target.arguments,
+            environment: buildOpenCodeProxyEnvironment(proxyURL: proxyURL, base: environment)
+        )
+    }
+
+    // MARK: - Process replacement
+
+    /// Replaces the launcher process with the command, the way a shell starts
+    /// a job: the command keeps the launcher's pid and process group, so
+    /// terminal job control, signals, and Ctrl+C behave exactly as if the
+    /// wrapper were not there. A plain child process would land in its own
+    /// process group and be SIGTTIN-stopped the moment a full-screen TUI
+    /// reads the terminal.
+    private static func replaceProcess(executable: String, arguments: [String], environment: [String: String]) -> Never {
+        var argv = arguments.map { strdup($0) }
+        argv.append(nil)
+        var envp = environment.map { strdup("\($0.key)=\($0.value)") }
+        envp.append(nil)
+        execve(executable, argv, envp)
+        // execve only returns when it fails.
+        let reason = strerror(errno).flatMap { String(validatingCString: $0) } ?? "unknown error"
+        fail("could not run \(executable): \(reason)", code: 127)
     }
 
     // MARK: - Invocation
@@ -213,9 +223,9 @@ enum Launcher {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
-    private static func fail(_ message: String) -> Never {
+    private static func fail(_ message: String, code: Int32 = 1) -> Never {
         writeError("RelayDock: " + message)
-        exit(1)
+        exit(code)
     }
 
     private static func printUsage(to handle: FileHandle = .standardOutput) {

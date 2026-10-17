@@ -94,7 +94,7 @@ opencode service stop && opencode service start   # interrupts active sessions
 
 Without that step an already-running service keeps its old environment; a cold start (no service running) inherits the wrapper's environment automatically. `opencode service restart` respawns the service without your shell environment — use stop + start.
 
-The wrapper only affects commands started after it is installed; already-running processes and the app are untouched. Verify a launch independently (the routing line reports the environment the wrapper set, not verified traffic):
+The wrapper only affects commands started after it is installed; already-running processes and the app are untouched. It replaces itself with the command, so the launched process keeps the shell job's pid and foreground process group — terminal job control, Ctrl+C, and full-screen TUIs behave as if the wrapper were not there. Verify a launch independently (the routing line reports the environment the wrapper set, not verified traffic):
 
 ```sh
 ps eww -p <opencode pid> | tr ' ' '\n' | grep -i proxy
