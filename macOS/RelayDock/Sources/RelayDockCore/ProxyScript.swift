@@ -109,3 +109,30 @@ final class SyncBox<Value: Sendable>: @unchecked Sendable {
         return stored
     }
 }
+
+/// Exports every entry's in-memory script `cache` as a JSON snapshot, keyed by
+/// the cache id used when the script ran (`ProxyEntry.id` for store entries).
+///
+/// The cache lives in memory only, so a consumer that launches a child process
+/// from a fresh process every time — a PATH wrapper, for example — can persist
+/// this map and hand it back with `importProxyScriptCacheSnapshots(_:)`. A
+/// script that caches its result then reuses it across launches instead of
+/// calling its provider again.
+public func exportProxyScriptCacheSnapshots() -> [String: String] {
+    ProxyScriptCache.shared.allSnapshots()
+}
+
+/// Restores snapshots produced by `exportProxyScriptCacheSnapshots()`. Entries
+/// that are not a JSON object or exceed the 64 KB cache limit are skipped, so
+/// a damaged persisted file cannot wedge a later script run.
+public func importProxyScriptCacheSnapshots(_ snapshots: [String: String]) {
+    var validated: [String: String] = [:]
+    for (id, json) in snapshots {
+        guard json.utf8.count <= ProxyScriptRuntime.maximumCacheBytes,
+              json.hasPrefix("{"),
+              let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)),
+              object is [String: Any] else { continue }
+        validated[id] = json
+    }
+    ProxyScriptCache.shared.merge(validated)
+}
