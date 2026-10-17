@@ -1,0 +1,188 @@
+# RelayDock proxy system — design proposal
+
+**Status:** Proposal — not implemented. Review and approval required before scheduling work.
+
+**Supersedes, on acceptance:** the spawn-time environment-injection model for the PATH wrapper
+(`README.md` → “PATH wrapper for OpenCode”) and its cross-launch script cache.
+
+**Scope:** macOS 14+, local-only, fail-closed. Covers the RelayDock app, `RelayDockCore`, the
+PATH wrapper, and how OpenCode processes (CLI/TUI and the background service) reach the internet.
+
+---
+
+## 1. Why the current model needs a redesign
+
+The current model resolves one proxy URL per launch and injects it as environment variables
+(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` + lowercase, merged `NO_PROXY`). Every fact below was
+observed on a real machine, not hypothesized.
+
+| # | Observed problem | Evidence |
+|---|---|---|
+| E1 | **The environment is fixed at process start.** The OpenCode background service (`opencode serve --service`) reads proxy variables once; changing the route requires `opencode service stop && opencode service start`, which interrupts running sessions. | Docker tripwire session; README §Service environment |
+| E2 | **The resolved upstream endpoint dies roughly every 30 minutes.** The bestproxy script caches `lifetime − 60s` from the provider message (`"proxy nay se die sau 1777s"`), but long-lived processes (the service, a TUI left open) keep the dead endpoint until someone restarts them. | Live `proxies.json` script + `ProxyScriptRuntime` cache |
+| E3 | **Three independent script caches** — the app (in-memory), the wrapper (disk), and implicit copies already baked into long-lived process environments — collide on the provider’s ~60 s `get.php` cooldown. A launch fetch at 15:39:52 followed by an app check at 15:40:42 recorded `Con 9s moi co the doi proxy` as a *failed health check*, which excluded the entry from Auto and fail-closed every subsequent launch until a manual re-test. | Live incident, 2026-10-17 |
+| E4 | **The health model is too blunt and never self-heals.** Any script error (including a provider throttle that says nothing about the endpoint) marks a proxy failed; nothing re-checks periodically — recovery is a manual `Test` click. | `ProxyStore.checkEntry`, `ProxyStoreError.autoHasNoHealthyProxy` |
+| E5 | **The wrapper carries duplicate machinery.** Disk cache file, script-hash guards, and its own resolution path must stay correct in a second process; the TUI hang (child in its own process group → SIGTTIN) showed the cost of a wrapper with its own process model. | `LauncherCacheFile.swift`, `Launcher.swift` |
+
+All five problems share one root cause: **the routing decision happens where it cannot be
+changed — inside each consumer process.** A redesign that keeps spawn-time injection will keep
+re-encountering E1–E4.
+
+## 2. Goals and non-goals
+
+**Goals**
+
+1. Rotation, upstream failover, and Off/Manual/Auto changes take effect **without restarting any
+   OpenCode process** — including the background service.
+2. **One owner** of script execution and caching; provider rate limits are handled in one place.
+3. Health that **self-heals**: real connectivity failures mark failed with backoff re-checks;
+   provider throttles defer, never mark failed.
+4. Fail-closed stays: no silent direct routing when the policy cannot be satisfied.
+5. Keep the product stance: opt-in wrapper, manual service activation, no OpenCode lifecycle
+   control, existing `proxies.json` path and permissions, `RELAYDOCK_CONFIG_DIR` honored.
+6. Reduce, not add, moving parts per process: the wrapper becomes thin.
+
+**Non-goals:** TLS interception/MITM, system-wide proxying (PAC, Network Extension, pf), cloud or
+remote control, UI redesign, per-request exit-IP control at the edge (the provider already rotates
+exit IPs server-side per request).
+
+## 3. Architecture — RelayDock Edge
+
+**Core idea:** every process that wants routing talks to a stable loopback endpoint. The
+environment never changes; **RelayDock Edge**, a small local forwarding proxy, makes the route
+decision per new connection. Rotation becomes invisible to consumers.
+
+```
+terminal ── opencode (env: HTTP_PROXY=http://127.0.0.1:57211)
+                  │ CONNECT
+                  ▼
+            RelayDock Edge  ── reads policy live ──  proxies.json (app writes)
+            127.0.0.1:57211             │
+                  ├── resolves via bestproxy script (single cache owner)
+                  └── CONNECT/SOCKS upstream ── rotating proxy ── OpenCode API
+opencode serve --service ── same stable env (activated once) ──┘
+RelayDock app ── status + delegated checks + lifecycle ──► Edge
+```
+
+**Components**
+
+| Component | What changes |
+|---|---|
+| **RelayDock Edge** (new executable, `relaydock-edge`) | Loopback HTTP proxy (`CONNECT` tunneling + absolute-URI forwarding), `http(s)`/`socks*` upstreams, live policy reads, rotation/failover, health scheduler, status API, log. Reuses `RelayDockCore` (store + script runtime). No UI. |
+| **`relaydock-launch`** (rewritten, thinner) | No script resolution, no disk cache, no endpoint in env. Reads `edge.json` → ensures Edge is running → prints the routing line from Edge status → `execve`s OpenCode with the **constant** proxy environment. Off mode: no proxy env at all (Off stays truly off). |
+| **`RelayDockCore`** (mostly unchanged) | Keeps `selectForSpawn`/env helpers for library consumers; the wrapper stops using the script path. `ProxyScriptRuntime` gains the retry-after classification used by Edge. |
+| **RelayDock app** (P2) | Shows Edge status (upstream, rotations, tunnels, service attribution), delegates script health checks to Edge, manages Edge lifecycle. Pool editing unchanged. |
+| **State files** | `proxies.json` unchanged (app writes, Edge reads by mtime). New `edge.json` (port, written at install; read by wrapper/app). New Edge-owned script cache + `edge.log` (0600). |
+
+**Route semantics stay recognizably “RelayDock”:** Manual/Auto keep the same fail-closed policy
+(`selectForSpawn` semantics: enabled+valid+not-known-failed, sticky binding), just executed live
+by Edge instead of at spawn time.
+
+## 4. Edge policies (the interesting parts)
+
+### 4.1 Selection and rotation
+
+- Per **new** connection: if mode is Off → forward direct; if the current upstream is missing,
+  expired, or suspect → resolve (single-flight, deduped) via the entry’s script or static URL.
+- **Proactive refresh:** when the cached upstream is within `min(60 s, lifetime/10)` of its
+  expiry, the next new connection triggers a resolve first. In-flight tunnels are never cut.
+- **Reactive failover:** N consecutive connect failures (default 3 within 30 s) mark the upstream
+  suspect and force a resolve. If the resolve fails but the old upstream still works, **keep
+  using the old upstream** and show a warning in status; only refuse (502 with reason) when the
+  old upstream is dead *and* no replacement resolved.
+- Provider throttle (`Con Ns moi co the doi proxy` and similar) → parse `retryAfter`, schedule the
+  next attempt, and **do not** record a failed health check.
+
+### 4.2 Health
+
+- Edge owns periodic checks for the active entry (default every 10 min) and backoff re-checks for
+  entries with a failed last check (5 → 15 → 60 min cap); a success clears failure.
+- Classification: TCP/TLS/HTTP failure through the proxy → **failed** (real connectivity fact);
+  script error / provider throttle → **deferred** with `retryAt`; neither hijacks the other.
+- The app’s `Test`/`Check All` delegates to `POST /__relaydock/check`; the app falls back to its
+  in-process path only when Edge is not running (degraded mode, warned in UI).
+
+### 4.3 Fail-closed matrix
+
+| Situation | Behavior |
+|---|---|
+| Edge unreachable, wrapper installed | Launcher tries to start Edge (on-demand spawn; launchd kickstart when the agent exists), then refuses to exec with exit 1 + hint. Never “silently direct”. |
+| Manual/Auto, no usable entry at resolve time | New CONNECTs → `502` + reason; existing tunnels continue; status lists the reason. |
+| Mode switched to Off while processes hold Edge env | Edge forwards direct (transparent); fresh launches get no env at all. |
+| Upstream dies mid-tunnel | Tunnel drops; client retries; Edge has already re-resolved (or 502 per above). |
+| Edge crash | Capability lost until next launch/app contact respawns it; P2 adds a launchd KeepAlive agent to shrink the window. |
+| Provider rate-limited during resolve | Serve old upstream; `retryAt` in status; health untouched. |
+
+### 4.4 Status API and verification (the honesty upgrade)
+
+- `GET http://127.0.0.1:<port>/__relaydock/status` → JSON: mode, upstream (label, masked URL,
+  source, resolved/expires at), rotation counters, active/recent tunnels with **peer pid
+  attribution** (via `LOCAL_PEERPID`), backoff state, last errors.
+- `POST /__relaydock/check` → `{entryID}` → runs one health check through Edge.
+- Loopback-bind only; requests gated to the same effective UID as the Edge process.
+- Because Edge sees real tunnels keyed by peer process, RelayDock can finally report
+  **evidence** — e.g. “OpenCode service (pid) tunneled 12 connections via BestProxy xoay, last
+  2 min ago”. The project’s honesty line evolves from “cannot verify traffic” to “verifies
+  Edge-routed traffic only; direct traffic stays invisible.” Wording change is a product
+  decision tracked in §9.
+
+## 5. Files, ports, lifecycle
+
+- **Default port `57211`** on `127.0.0.1`; installer probes for a free port, writes
+  `<config>/edge.json` (`{version, port}`); wrapper and app read it. Consumers never guess.
+- **Lifecycle (P1):** spawn-on-demand. The wrapper (or app) starts `relaydock-edge` detached when
+  status ping fails; Edge stays resident while the user is logged in (it must outlive prompts of
+  the long-running service). A login-shell `launchd` agent with `KeepAlive` is **P2**, when the app
+  ships it via SMAppService; CLI-only installs can opt in with a plist from the installer script.
+- **Script cache:** Edge-owned `<config>/script-cache.json` (existing snapshot format/API); one-time
+  import of the legacy `launcher-cache.json` if present. No other process reads or writes it.
+- **service activation** stays manual and one-time: after installing (or if the service currently
+  runs without the Edge env), run `opencode service stop && opencode service start` from a wrapped
+  shell once — or reboot. After that, rotations and mode changes **never** require another restart;
+  a cold-started service inherits the wrapper env automatically.
+- **Uninstall:** wrapper script removes symlink, `relaydock-edge`, `edge.json`, agent (if any);
+  `proxies.json` and Edge cache remain user data unless explicitly cleared.
+
+## 6. What consumers see
+
+| Consumer | Before | After |
+|---|---|---|
+| Terminal `opencode` launch | per-launch resolved endpoint in env; dies in ~30 min | constant env; routing line reports mode + upstream + age from Edge status |
+| `opencode serve --service` | env freezes an endpoint for days; stop+start per rotation | activated once; survives rotations; visible in status with tunnel attribution |
+| RelayDock app Test | resolves scripts itself → rate-limit collisions | delegated to Edge; single cache; throttles are `deferred`, not failed |
+| Library consumers (`RelayDockCore`) | unchanged API (`selectForSpawn`, env helpers) | unchanged; Edge is the new first-party implementation of that pattern |
+
+## 7. Migration phases
+
+- **P0 (done):** wrapper `execve` fix — terminal job control (PR #8).
+- **P1 — Edge core:** `relaydock-edge` target (proxy engine, rotation/failover, health scheduler,
+  status API, log), wrapper rewrite (constant env, ensure-Edge, status line), installer updates,
+  hermetic sandbox tests extended (fake upstream + fake provider, assert rotation without process
+  restart), README/PRODUCT updates. Retires `LauncherCacheFile`.
+- **P2 — App integration:** status panel, delegated checks, Edge lifecycle (SMAppService/KeepAlive),
+  service attribution UI, product wording for verified-edge-traffic.
+- **P3 — Optional:** launchd socket activation (Edge starts on first connection), upstream
+  connection pooling, per-account ports for multi-binding use.
+
+## 8. Alternatives considered
+
+| Alternative | Why not |
+|---|---|
+| Keep spawn-time injection, document “relaunch/restart to rotate” | E1/E2 are unfixable by policy: long-lived processes cannot pick up a new env, and the service restart interrupts sessions. |
+| App-hosted listener (no separate process) | Routing lifetime would be coupled to the menubar app; quitting the app would break the service’s connections until relaunch. Edge as its own process keeps app and routing lifecycles independent. |
+| Edge with idle self-exit | The background service must reach Edge between prompts, hours apart; self-exit would break it. Residency is a requirement, not a luxury. |
+| launchd socket activation from day one | Genuinely elegant, but adds launchd packaging complexity to the critical path; deferred to P3 without changing consumer contracts. |
+| PAC / Network Extension / transparent interception | System-wide blast radius, entitlements/signing burden, and TLS MITM — all out of product scope. |
+| Configure proxy inside OpenCode’s own config instead of env | No documented, stable interface for it; env proxying is the mechanism already proven end-to-end (Docker E2E against the real binary). |
+
+## 9. Open questions (need answers before P1 closes)
+
+1. Product wording for the verification upgrade in §4.4 — update `PRODUCT.md`/README honesty text in
+   the same change as the app status panel, or keep current wording until P2 ships?
+2. Status API hardening: same-UID peer gate via `LOCAL_PEERPID` — sufficient, or also a
+   per-install bearer token in `edge.json`?
+3. Port policy: fixed default `57211` with installer probing — acceptable, or prefer a
+   deterministic derivation (e.g. hash of home path) to avoid cross-machine drift in docs?
+4. Edge ownership of periodic health checks: default cadence 10 min OK against the provider’s
+   cooldowns, or derive from `retryAfter`/lifetime only (no fixed timer)?
+5. P1 lifecycle: spawn-on-demand only (recommended) or ship the launchd agent in P1 too?
