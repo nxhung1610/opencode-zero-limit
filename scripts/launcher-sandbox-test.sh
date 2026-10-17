@@ -6,7 +6,9 @@
 # no real OpenCode CLI, no provider accounts, no network. Covers the P1
 # acceptance paths: cold launch, warm/sticky launch, rotation without a
 # process restart, script-edit invalidation, the token gate, fail-closed
-# behaviour, the spawn race, crash respawn, and job control.
+# behaviour, the spawn race, crash respawn, job control, plus the P2
+# stability paths: mid-stream-death and zero-byte-stall strikes, and
+# Retry-After on throttled 502s.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +24,11 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/relaydock-sandbox-test.XXXXXX")"
 PROVIDER_PID=""
 PROXY_A_PID=""
 PROXY_B_PID=""
+PROXY_DIE_PID=""
+PROXY_HANG_PID=""
 OCCUPANT_PID=""
 cleanup() {
-  for pid in "$PROVIDER_PID" "$PROXY_A_PID" "$PROXY_B_PID" "$OCCUPANT_PID"; do
+  for pid in "$PROVIDER_PID" "$PROXY_A_PID" "$PROXY_B_PID" "$PROXY_DIE_PID" "$PROXY_HANG_PID" "$OCCUPANT_PID"; do
     if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; fi
   done
   "$EDGE" stop >/dev/null 2>&1 || true
@@ -40,10 +44,10 @@ mkdir -p "$CONFIG" "$STUB_DIRECTORY" "$LINK_DIRECTORY"
 export RELAYDOCK_CONFIG_DIR="$CONFIG"
 
 # --- fake provider + fake proxies -------------------------------------------
-read -r PROVIDER_PORT PROXY_A_PORT PROXY_B_PORT <<< "$(python3 - <<'PYEOF'
+read -r PROVIDER_PORT PROXY_A_PORT PROXY_B_PORT PROXY_DIE_PORT PROXY_HANG_PORT <<< "$(python3 - <<'PYEOF'
 import socket
 ports = []
-for _ in range(3):
+for _ in range(5):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     ports.append(s.getsockname()[1])
@@ -54,11 +58,16 @@ PYEOF
 COUNT_FILE="$WORK/provider-count"
 PROXY_LOG_A="$WORK/proxy-log-a"
 PROXY_LOG_B="$WORK/proxy-log-b"
+PROXY_LOG_DIE="$WORK/proxy-log-die"
+PROXY_LOG_HANG="$WORK/proxy-log-hang"
 
 cat > "$WORK/fake-services.py" <<'PYEOF'
 import http.server
+import socket
 import socketserver
+import struct
 import sys
+import time
 
 mode = sys.argv[1]
 
@@ -88,7 +97,7 @@ if mode == "provider":
             pass
 
     http.server.HTTPServer(("127.0.0.1", port), Provider).serve_forever()
-else:
+elif mode == "proxy":
     proxy_log, tag, port = sys.argv[2], sys.argv[3], int(sys.argv[4])
 
     class ProxyHandler(socketserver.BaseRequestHandler):
@@ -102,6 +111,40 @@ else:
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer(("127.0.0.1", port), ProxyHandler) as server:
         server.serve_forever()
+elif mode == "die":
+    proxy_log, tag, port = sys.argv[2], sys.argv[3], int(sys.argv[4])
+
+    class DieHandler(socketserver.BaseRequestHandler):
+        def handle(self):
+            data = self.request.recv(8192)
+            line = data.split(b"\r\n", 1)[0].decode(errors="replace")
+            with open(proxy_log, "a") as handle:
+                handle.write(f"[{tag}] {line}\n")
+            # Commit to a response, let the bytes land, then reset mid-stream.
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\npartial")
+            time.sleep(0.2)
+            self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            self.request.close()
+
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer(("127.0.0.1", port), DieHandler) as server:
+        server.serve_forever()
+else:
+    # hang: accept the request, then never answer — a zombie endpoint.
+    proxy_log, tag, port = sys.argv[2], sys.argv[3], int(sys.argv[4])
+
+    class HangHandler(socketserver.BaseRequestHandler):
+        def handle(self):
+            data = self.request.recv(8192)
+            line = data.split(b"\r\n", 1)[0].decode(errors="replace")
+            with open(proxy_log, "a") as handle:
+                handle.write(f"[{tag}] {line}\n")
+            while True:
+                time.sleep(3600)
+
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer(("127.0.0.1", port), HangHandler) as server:
+        server.serve_forever()
 PYEOF
 
 python3 "$WORK/fake-services.py" provider "$COUNT_FILE" "$PROXY_A_PORT" "$PROXY_B_PORT" "$PROVIDER_PORT" &
@@ -110,6 +153,10 @@ python3 "$WORK/fake-services.py" proxy "$PROXY_LOG_A" A "$PROXY_A_PORT" &
 PROXY_A_PID=$!
 python3 "$WORK/fake-services.py" proxy "$PROXY_LOG_B" B "$PROXY_B_PORT" &
 PROXY_B_PID=$!
+python3 "$WORK/fake-services.py" die "$PROXY_LOG_DIE" DIE "$PROXY_DIE_PORT" &
+PROXY_DIE_PID=$!
+python3 "$WORK/fake-services.py" hang "$PROXY_LOG_HANG" HANG "$PROXY_HANG_PORT" &
+PROXY_HANG_PID=$!
 
 for _ in $(seq 1 25); do
   curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PROVIDER_PORT/count" && break
@@ -185,6 +232,8 @@ run_launcher() {
 edge_pid() { lsof -nP -iTCP:"$EDGE_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 edge_stop() { "$EDGE" stop >/dev/null 2>&1 || true; }
 provider_count() { cat "$COUNT_FILE" 2>/dev/null || echo 0; }
+status_json() { curl -s --max-time 5 -H "Authorization: Bearer $EDGE_TOKEN" "http://127.0.0.1:$EDGE_PORT/__relaydock/status"; }
+counter() { status_json | python3 -c 'import json,sys; print(json.load(sys.stdin)["counters"].get(sys.argv[1], 0))' "$1"; }
 
 echo "== scenario 1: cold launch spawns Edge on demand and routes through it =="
 write_store auto "$CACHING_SCRIPT"
@@ -222,6 +271,7 @@ check "routing line now names the warm upstream" grep -q "Sandbox (" "$WORK/stde
 check "the tunnel carries best-effort peer attribution" bash -c "'$EDGE' status | grep -q 'peerName.*curl'"
 check "the proxy URL is identical across launches" test "$(grep -x 'HTTP_PROXY=.*' "$RECORD.env" | head -1)" = "$PROXY_URL_1"
 check "Edge is the same process (no restart)" test "$(edge_pid)" = "$EDGE_PID_1"
+check "clean traffic recorded no stream failures" test "$(counter streamFailures)" -eq 0
 
 echo "== scenario 3: upstream rotation happens live, with no process restart =="
 kill "$PROXY_A_PID" 2>/dev/null || true
@@ -376,7 +426,43 @@ PTY_OUTPUT="$(RELAYDOCK_CONFIG_DIR="$CONFIG" PATH="$LINK_DIRECTORY:$STUB_DIRECTO
   script -q /dev/null "$LAUNCHER" sh -c 'PG=$(ps -o pgid= -p $$ | tr -d " "); TP=$(ps -o tpgid= -p $$ | tr -d " "); if [ "$PG" = "$TP" ]; then echo FOREGROUND; else echo BACKGROUND; fi' 2>/dev/null | tr -d "\r")"
 check "command keeps the terminal foreground group" grep -q FOREGROUND <<< "$PTY_OUTPUT"
 
-echo "== scenario 13: the edge CLI reports and stops the daemon =="
+echo "== scenario 13: a tunnel that dies mid-stream counts a failure and re-resolves =="
+write_store auto "return \"http://127.0.0.1:$PROXY_DIE_PORT\";"
+rm -f "$RECORD.args" "$RECORD.proxy" "$PROXY_LOG_DIE"
+RESOLUTIONS_BEFORE="$(counter resolutions)"
+run_launcher dying
+for _ in $(seq 1 25); do
+  if [[ "$(counter streamFailures)" -ge 1 ]]; then break; fi
+  sleep 0.2
+done
+check "the die proxy saw the request" test -s "$PROXY_LOG_DIE"
+check "Edge counted the stream failure" test "$(counter streamFailures)" -ge 1
+check "Edge re-resolved after the mid-stream death" test "$(counter resolutions)" -gt "$RESOLUTIONS_BEFORE"
+check "edge.log names the mid-stream death" grep -q "tunnel died mid-stream" "$CONFIG/edge.log"
+
+echo "== scenario 14: a zero-byte stall is counted when the client gives up =="
+write_store auto "return \"http://127.0.0.1:$PROXY_HANG_PORT\";"
+rm -f "$PROXY_LOG_HANG"
+STREAM_BEFORE="$(counter streamFailures)"
+# The client waits past the 30s stall window without a single response byte.
+curl -s --max-time 35 -x "http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" http://relaydock.test/zombie -o /dev/null || true
+for _ in $(seq 1 25); do
+  if [[ "$(counter streamFailures)" -gt "$STREAM_BEFORE" ]]; then break; fi
+  sleep 0.2
+done
+check "the hang proxy saw the request" test -s "$PROXY_LOG_HANG"
+check "Edge counted the stall as a stream failure" test "$(counter streamFailures)" -gt "$STREAM_BEFORE"
+check "edge.log names the zero-byte stall" grep -q "zero-byte stall" "$CONFIG/edge.log"
+
+echo "== scenario 15: a throttled provider surfaces Retry-After on the 502 =="
+write_store auto "throw new Error(\"Con 25s moi co doi proxy\");"
+HEADERS="$(curl -s -D - -o /dev/null --max-time 10 -x "http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" http://relaydock.test/cooldown 2>/dev/null | tr -d '\r' || true)"
+check "the refusal is a 502" grep -q "^HTTP/1.1 502" <<< "$HEADERS"
+check "the refusal carries Retry-After" grep -qE "^Retry-After: 2[0-9]$" <<< "$HEADERS"
+check "the body explains the provider cooldown" bash -c "curl -s --max-time 10 -x 'http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT' http://relaydock.test/cooldown | grep -q 'moi co doi proxy'"
+check "status reports the cooldown deadline" bash -c "curl -s --max-time 5 -H 'Authorization: Bearer $EDGE_TOKEN' 'http://127.0.0.1:$EDGE_PORT/__relaydock/status' | grep -q throttleRetryAt"
+
+echo "== scenario 16: the edge CLI reports and stops the daemon =="
 if "$EDGE" status > /dev/null 2>&1; then
   pass "status exits zero while running"
 else

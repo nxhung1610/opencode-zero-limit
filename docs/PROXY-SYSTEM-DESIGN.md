@@ -110,6 +110,9 @@ by Edge instead of at spawn time.
   entries with a failed last check (5 → 15 → 60 min cap); a success clears failure.
 - Classification: TCP/TLS/HTTP failure through the proxy → **failed** (real connectivity fact);
   script error / provider throttle → **deferred** with `retryAt`; neither hijacks the other.
+- A tunnel that dies mid-stream or stalls (request bytes flowed, no response byte for 30 s, the
+  client gives up) schedules a near-term re-check (≤30 s) through a fresh endpoint, so a zombie
+  provider cannot hide behind an open-but-silent tunnel.
 - The app’s `Test`/`Check All` delegates to `POST /__relaydock/check`; the app falls back to its
   in-process path only when Edge is not running (degraded mode, warned in UI).
 - **Persistence discipline:** `proxies.json` stays single-writer (the app, always — P1 and beyond;
@@ -126,7 +129,8 @@ by Edge instead of at spawn time.
 | Manual/Auto, no usable entry at resolve time | New CONNECTs → `502` + reason; existing tunnels continue; status lists the reason. |
 | Resolve error reaches a wrapped terminal launch | Not blocked at launch: the TUI opens and the first request fails closed (502 + reason). Deliberate — provider timing never blocks the terminal; warm-up makes this rare. |
 | Mode switched to Off while processes hold Edge env | Edge forwards direct (transparent); fresh launches get no env at all. |
-| Upstream dies mid-tunnel | Tunnel drops; the next dial re-resolves single-flight and is retried once internally; 502 only when nothing is usable. |
+| Upstream dies mid-tunnel | Tunnel drops; the next dial re-resolves single-flight and is retried once internally; 502 only when nothing is usable. A death or zero-byte stall on an established tunnel also counts as a strike (first-ender classification: client-induced cancels never strike), drops the script snapshot, re-resolves immediately when a mode is active, and raises `streamFailures`. The dead request itself is never retried — bytes were already in flight. |
+| Refusal inside a provider cooldown | The `502` carries `Retry-After: <whole seconds>` built from the pending `retryAt`; the absence of the header means "retry whenever". |
 | Edge crash | Capability lost until next launch/app contact respawns it; P2 adds a launchd KeepAlive agent to shrink the window. |
 | Edge cannot bind its port | Edge exits loudly (boot error in `edge.log`); the launcher refuses with a port-conflict/reinstall hint. Ports never renumber silently once consumers hold the env. |
 | Provider rate-limited during resolve | Serve old upstream; `retryAt` in status; health untouched. |
@@ -201,6 +205,12 @@ by Edge instead of at spawn time.
   Acceptance tests: hermetic rotation without process restart; token header actually arrives from
   the real binary; TUI↔service localhost traffic under the Edge env (`NO_PROXY` with Bun — never
   yet exercised end-to-end); one-time service activation followed by rotation with no restarts.
+- **P2a — Edge stability (implemented):** relay-end classification (first-ender wins; client-induced
+  cancels never strike), `noteTunnelFailure` (strike + snapshot drop + single-flight re-resolve +
+  near-term health re-check), `Retry-After` on 502s issued during a provider cooldown, and a
+  `streamFailures` counter (additive field; older binaries still decode). Tests: unit suite plus
+  hermetic sandbox scenarios (mid-stream death, zero-byte stall, cooldown); `scripts/tps-bench.sh`
+  measures wrapped-vs-direct TPS read back from the OpenCode database.
 - **P2 — App integration:** status panel, delegated checks, Edge lifecycle (KeepAlive agent;
   `SMAppService` needs a signed app, installer plist until then), service attribution UI, product
   wording for verified-edge-traffic.
