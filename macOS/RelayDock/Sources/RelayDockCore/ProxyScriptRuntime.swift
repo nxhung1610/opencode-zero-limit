@@ -9,7 +9,9 @@ enum ProxyScriptRuntime {
     private static let httpTimeout: TimeInterval = 8
     private static let maximumResponseBytes = 256 * 1024
     private static let maximumRequestBytes = 64 * 1024
-    private static let maximumCacheBytes = 64 * 1024
+    /// Shared with the public cache-transfer helpers so imports validate
+    /// against the same cap the runtime enforces on snapshots.
+    static let maximumCacheBytes = 64 * 1024
 
     /// Runs one script on the calling thread. The caller owns the deadline;
     /// the pump also stops itself at `timeout` so an abandoned worker exits
@@ -365,6 +367,23 @@ final class ProxyScriptCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         snapshots[id] = nil
+    }
+
+    /// A copy of every snapshot, used to persist caches across launches.
+    func allSnapshots() -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshots
+    }
+
+    /// Adds or replaces snapshots. Keys that are not provided are kept, so a
+    /// partial import never drops unrelated entries' caches.
+    func merge(_ newSnapshots: [String: String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, json) in newSnapshots {
+            snapshots[id] = json
+        }
     }
 }
 
