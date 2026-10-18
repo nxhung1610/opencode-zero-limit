@@ -12,7 +12,7 @@ RelayDock is a compact native SwiftUI utility for managing a local proxy pool an
 - Save Off, Manual, or Auto policy. Manual and Auto configuration remains fail-closed; invalid or missing routes are not silently changed to Off.
 - Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
 - Provide `RelayDockCore` helpers for consumers that launch their own child process and need to select a route and construct proxy environment variables.
-- Optionally install a PATH wrapper (`scripts/opencode-wrapper.sh install`) so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop). Fail-closed on routing errors; Off mode never contacts Edge.
+- Optionally install a PATH wrapper (`scripts/opencode-wrapper.sh install`) so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop; with an `edge.json` present the agent also declares launchd `Sockets`, so Edge starts on the first connection). Fail-closed on routing errors; Off mode never contacts Edge.
 - Show Edge's live status in the app: a RelayDock Edge section on the Routing tab and a compact line in the menu bar popover — mode, upstream with expiry, rotation/failure counters, provider cooldown, and recent tunnels attributed to the peer process that opened them. `Test All` delegates health checks to Edge (the owner of the script cache) and falls back in-process, labeled in the pool view, only when Edge is unreachable.
 
 A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy — only Edge's tunnel accounting speaks to real traffic, and it says nothing about traffic that bypasses Edge: **RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.**
@@ -84,7 +84,7 @@ scripts/opencode-wrapper.sh uninstall  # boots out the agent; stops Edge; remove
 Each launch:
 
 - Reads `edge.json` (loopback port + per-install token). The port never renumbers silently once consumers hold the environment: if Edge cannot bind at runtime it exits loudly (`edge.log`) and the launcher refuses with a reinstall hint.
-- Ensures Edge is running: a loaded KeepAlive agent is kickstarted (bootstrapped first if not loaded), otherwise `relaydock-edge` is spawned detached. Concurrent starts are safe; the loser exits quietly, and `KeepAlive { SuccessfulExit: false }` means a clean loser-exit never respawn-loops.
+- Ensures Edge is running: with a socket-activated plist the launcher waits briefly for launchd to start Edge on the first connection (its status pings are the connection); otherwise a loaded KeepAlive agent is kickstarted (bootstrapped first if not loaded), else `relaydock-edge` is spawned detached. Concurrent starts are safe; the loser exits quietly, and `KeepAlive { SuccessfulExit: false }` means a clean loser-exit never respawn-loops.
 - Prints one line to stderr from Edge's live status — `RelayDock: routed via Edge on 127.0.0.1:<port> — <entry> (<masked URL>)`, or a "first request resolves the upstream" note when Edge has not resolved yet; set `RELAYDOCK_QUIET=1` to silence it.
 - Sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (and lowercase variants) to the constant `http://<token>:@127.0.0.1:<port>`, merges `NO_PROXY=localhost,127.0.0.1` so the local OpenCode server keeps working, and removes `OPENCODE_SERVER_*` variables from the child environment. (The colon after the token is load-bearing: OpenCode's HTTP stack only sends `Proxy-Authorization` for a `username:password` userinfo; verified against the real binary.)
 - Fails closed — exit 1, command not started, reinstall hint — when `edge.json` is missing or damaged or when Edge cannot be reached or started after spawning. Never a silent direct launch. Off mode launches the command with no proxy variables and never contacts Edge.
@@ -93,6 +93,7 @@ Edge itself:
 
 - Resolves the selected entry (static URL or JavaScript script) on demand and single-flight; when a dial to the upstream fails it drops the cached script result, re-resolves, and retries once — **rotation no longer requires restarting anything**.
 - Keeps one provider cooldown budget and one cache across all launches in `<config>/script-cache.json` (one-time adoption of the old `launcher-cache.json`); per-script hashes drop stale results the moment a script is edited.
+- Pins extra loopback listeners when `edge.json` declares `listeners: [{port, entryID}]`: each such port serves exactly that pool entry — an explicit binding that ignores global Off mode and never falls back to direct — and `/status` lists every listener with its `activated` flag.
 - Health-checks endpoints on a 10-minute cadence (with backoff after failures) and never blocks a launch on provider timing: if no upstream is usable, the **first request** gets HTTP 502 from Edge instead of a failed launch.
 - Binds `127.0.0.1` only and requires the token on every proxy and admin request. `GET /__relaydock/status` reports mode, upstream, counters, and best-effort same-user tunnel attribution — it is a status surface, not a second control plane.
 
@@ -112,7 +113,7 @@ lsof -nP -iTCP -a -p <opencode pid> | grep ESTABLISHED
 relaydock-edge status
 ```
 
-`scripts/launcher-sandbox-test.sh` exercises the wrapper, Edge, and the installer end-to-end against a stub command, a fake `launchctl`, and local fake provider/proxies — cold start, warm sticky launch, live rotation, script-edit invalidation, the token gate, fail-closed paths, the spawn race, crash respawn, Off-mode checks, agent kickstart/bootout, and job control — with no real OpenCode CLI, accounts, or network.
+`scripts/launcher-sandbox-test.sh` exercises the wrapper, Edge, and the installer end-to-end against a stub command, a fake `launchctl`, and local fake provider/proxies — cold start, warm sticky launch, live rotation, script-edit invalidation, the token gate, fail-closed paths, the spawn race, crash respawn, Off-mode checks, agent kickstart/bootout, socket activation (an inherited listener), pinned listeners, and job control — with no real OpenCode CLI, accounts, or network.
 
 ## Scope
 
