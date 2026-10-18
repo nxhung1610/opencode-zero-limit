@@ -502,19 +502,9 @@ private final class EdgeRelayEndHolder: @unchecked Sendable {
     }
 }
 
-/// The `/__relaydock/check` response shape.
-struct EdgeCheckResponse: Codable {
-    struct Result: Codable {
-        var ok: Bool
-        var latencyMs: Double?
-        var checkedAt: Double
-        var error: String?
-        var deferred: Bool
-        var retryAfter: Double?
-    }
-
-    var results: [String: Result]
-
+/// Maps the daemon's check outcomes into the shared wire shape (`EdgeCheckResponse`
+/// lives in Core so the app can decode what Edge sends here).
+extension EdgeCheckResponse {
     init(outcomes: [String: EdgeCheckOutcome]) {
         var mapped: [String: Result] = [:]
         for (id, outcome) in outcomes {
@@ -539,6 +529,6 @@ struct EdgeCheckResponse: Codable {
                 )
             }
         }
-        results = mapped
+        self.init(results: mapped)
     }
 }

@@ -214,4 +214,127 @@ public enum EdgeStatusClient {
         guard let value = execution.value else { return nil }
         return value
     }
+
+    // MARK: - Async admin calls (the app's status panel and delegated checks)
+
+    /// The status fetch the app's panel polls. Async so SwiftUI surfaces can
+    /// await it without blocking the main thread; the timeout stays short —
+    /// the panel reads a miss as "Edge is not running", not as an error.
+    public static func fetchStatusAsync(
+        config: EdgeConfigFile,
+        timeout: TimeInterval = 1.5
+    ) async -> EdgeStatusResponse? {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/__relaydock/status")!)
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        return await performAsync(request: request, timeout: timeout) { data in
+            guard let status = try? JSONDecoder().decode(EdgeStatusResponse.self, from: data),
+                  status.ok,
+                  status.protocolVersion == EdgeProtocol.version else { return nil }
+            return status
+        }
+    }
+
+    /// Runs health checks inside Edge — the owner of the script cache — and
+    /// returns the per-entry outcomes for the app to persist into the pool.
+    /// `scope: .all` checks every enabled proxy with a valid definition.
+    public static func runChecksAsync(
+        config: EdgeConfigFile,
+        scope: EdgeCheckRequestScope,
+        timeout: TimeInterval = 90
+    ) async -> EdgeCheckResponse? {
+        guard var components = URLComponents(
+            string: "http://127.0.0.1:\(config.port)/__relaydock/check"
+        ) else { return nil }
+        switch scope {
+        case .active:
+            break
+        case .all:
+            components.queryItems = [URLQueryItem(name: "scope", value: "all")]
+        case .entry(let entryID):
+            components.queryItems = [URLQueryItem(name: "entry", value: entryID)]
+        }
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        return await performAsync(request: request, timeout: timeout) { data in
+            try? JSONDecoder().decode(EdgeCheckResponse.self, from: data)
+        }
+    }
+
+    private static func performAsync<T: Sendable>(
+        request: URLRequest,
+        timeout: TimeInterval,
+        transform: @escaping @Sendable (Data) -> T?
+    ) async -> T? {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return nil }
+            return transform(data)
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// The `/__relaydock/check` scopes callers can request.
+public enum EdgeCheckRequestScope: Sendable {
+    case active
+    case all
+    case entry(String)
+}
+
+/// The `/__relaydock/check` response shape. Edge maps its internal check
+/// outcomes into this wire form; the app decodes it and persists the health
+/// it describes into `proxies.json`.
+public struct EdgeCheckResponse: Codable, Equatable, Sendable {
+    public struct Result: Codable, Equatable, Sendable {
+        public var ok: Bool
+        public var latencyMs: Double?
+        public var checkedAt: Double
+        public var error: String?
+        public var deferred: Bool
+        public var retryAfter: Double?
+
+        public init(
+            ok: Bool,
+            latencyMs: Double? = nil,
+            checkedAt: Double,
+            error: String? = nil,
+            deferred: Bool = false,
+            retryAfter: Double? = nil
+        ) {
+            self.ok = ok
+            self.latencyMs = latencyMs
+            self.checkedAt = checkedAt
+            self.error = error
+            self.deferred = deferred
+            self.retryAfter = retryAfter
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            ok = (try? container.decode(Bool.self, forKey: .ok)) == true
+            latencyMs = try container.decodeIfPresent(Double.self, forKey: .latencyMs)
+            checkedAt = try container.decodeIfPresent(Double.self, forKey: .checkedAt)
+                ?? Date().timeIntervalSince1970 * 1_000
+            error = try container.decodeIfPresent(String.self, forKey: .error)
+            deferred = (try? container.decode(Bool.self, forKey: .deferred)) == true
+            retryAfter = try container.decodeIfPresent(Double.self, forKey: .retryAfter)
+        }
+    }
+
+    public var results: [String: Result]
+
+    public init(results: [String: Result]) {
+        self.results = results
+    }
 }

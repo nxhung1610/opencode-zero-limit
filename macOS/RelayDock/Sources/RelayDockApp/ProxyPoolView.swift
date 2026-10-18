@@ -51,6 +51,17 @@ struct ProxyPoolView: View {
             .padding(.top, 18)
             .padding(.bottom, 12)
 
+            if let route = model.lastCheckRoute {
+                Text(route == .edge
+                     ? "Last check ran through RelayDock Edge."
+                     : "RelayDock Edge was unreachable, so the last check ran in this app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 10)
+            }
+
             Divider()
 
             if let state = model.state, state.proxies.isEmpty {

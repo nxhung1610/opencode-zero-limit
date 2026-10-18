@@ -26,6 +26,10 @@ struct RoutingView: View {
                 Section {
                     LabeledContent("Policy", value: "Saved locally")
                 }
+
+                Section {
+                    EdgePanelView(model: model)
+                }
             }
             .formStyle(.grouped)
             .frame(maxWidth: 560)

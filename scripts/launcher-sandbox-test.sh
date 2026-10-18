@@ -43,6 +43,30 @@ RECORD="$WORK/stub-record"
 mkdir -p "$CONFIG" "$STUB_DIRECTORY" "$LINK_DIRECTORY"
 export RELAYDOCK_CONFIG_DIR="$CONFIG"
 
+# Hermetic HOME + launchctl fake (P2 agent scenarios). The real machine may
+# have a real RelayDock launchd agent loaded; the sandbox must never touch it,
+# and agent paths must resolve inside $WORK.
+export HOME="$WORK/home"
+mkdir -p "$HOME/Library/LaunchAgents"
+FAKE_BIN_DIRECTORY="$WORK/fake-bin"
+mkdir -p "$FAKE_BIN_DIRECTORY"
+LAUNCHCTL_RECORD="$WORK/launchctl-record"
+LAUNCHCTL_CODES="$WORK/launchctl-codes"
+LAUNCHCTL_COUNT="$WORK/launchctl-count"
+cat > "$FAKE_BIN_DIRECTORY/launchctl" <<FAKEEOF
+#!/bin/bash
+echo "\$@" >> "$LAUNCHCTL_RECORD"
+count=0
+if [[ -f "$LAUNCHCTL_COUNT" ]]; then count=\$(cat "$LAUNCHCTL_COUNT"); fi
+count=\$((count + 1))
+echo "\$count" > "$LAUNCHCTL_COUNT"
+code=\$(sed -n "\${count}p" "$LAUNCHCTL_CODES" 2>/dev/null)
+if [[ -z "\$code" ]]; then code=1; fi
+exit "\$code"
+FAKEEOF
+chmod +x "$FAKE_BIN_DIRECTORY/launchctl"
+export RELAYDOCK_LAUNCHCTL="$FAKE_BIN_DIRECTORY/launchctl"
+
 # --- fake provider + fake proxies -------------------------------------------
 read -r PROVIDER_PORT PROXY_A_PORT PROXY_B_PORT PROXY_DIE_PORT PROXY_HANG_PORT <<< "$(python3 - <<'PYEOF'
 import socket
@@ -475,6 +499,71 @@ set +e
 STATUS=$?
 set -e
 check "status exits non-zero after stop" test "$STATUS" -ne 0
+
+echo "== scenario 17: a wrapped launch kickstarts the launchd agent =="
+edge_stop
+write_store auto "$CACHING_SCRIPT"
+export AGENT_PLIST_PATH="$HOME/Library/LaunchAgents/com.nxhung.relaydock.edge.plist"
+"$EDGE" agent-plist > "$AGENT_PLIST_PATH"
+rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT" "$RECORD.args" "$RECORD.proxy"
+printf '0\n0\n' > "$LAUNCHCTL_CODES"
+run_launcher agent-wake
+check "stub ran through the agent-wake path" grep -q "^agent-wake$" "$RECORD.args"
+check "stub reached a proxy successfully" grep -q "^200$" "$RECORD.proxy"
+check "the launcher kickstarted the loaded agent" grep -q "kickstart -k gui/$(id -u)/com.nxhung.relaydock.edge" "$LAUNCHCTL_RECORD"
+check "the spawn fallback started Edge anyway" test -n "$(edge_pid)"
+
+echo "== scenario 18: stop unloads a managing launchd agent =="
+rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT" "$WORK/stop-out"
+printf '0\n0\n' > "$LAUNCHCTL_CODES"
+set +e
+"$EDGE" stop > "$WORK/stop-out" 2>&1
+STOP_STATUS=$?
+set -e
+check "stop exited zero" test "$STOP_STATUS" -eq 0
+check "stop booted the agent out" grep -q "bootout gui/$(id -u)/com.nxhung.relaydock.edge" "$LAUNCHCTL_RECORD"
+check "stop reported the agent unload" grep -q "unloaded launchd agent" "$WORK/stop-out"
+check "the running Edge kept serving (bootout is launchd's job)" test -n "$(edge_pid)"
+
+echo "== scenario 19: checks stay available in Off mode =="
+write_store off "$CACHING_SCRIPT"
+curl -s --max-time 30 -X POST -H "Authorization: Bearer $EDGE_TOKEN" \
+  "http://127.0.0.1:$EDGE_PORT/__relaydock/check?scope=all" > "$WORK/off-check.json"
+echo "  off-check body: $(head -c 300 "$WORK/off-check.json" | tr -d '\n')"
+check "off-mode checks still run and return results" grep -q '"px_sandbox"' "$WORK/off-check.json"
+check "the off-mode check produced a per-entry outcome" grep -Eq '"ok":(true|false)' "$WORK/off-check.json"
+
+echo "== scenario 20: the installer wires and unwires the launchd agent =="
+INSTALL_HOME="$WORK/install-home"
+mkdir -p "$INSTALL_HOME"
+rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT" "$WORK/install-out" "$WORK/uninstall-out"
+printf '0\n0\n0\n' > "$LAUNCHCTL_CODES"
+set +e
+HOME="$INSTALL_HOME" PATH="$FAKE_BIN_DIRECTORY:$PATH" RELAYDOCK_CONFIG_DIR="$CONFIG" \
+  bash "$ROOT/scripts/opencode-wrapper.sh" install > "$WORK/install-out" 2>&1
+INSTALL_STATUS=$?
+set -e
+check "installer exited zero" test "$INSTALL_STATUS" -eq 0
+INSTALLED_AGENT_PLIST="$INSTALL_HOME/Library/LaunchAgents/com.nxhung.relaydock.edge.plist"
+check "installer wrote the agent plist" test -f "$INSTALLED_AGENT_PLIST"
+check "agent plist keeps the label" bash -c "/usr/libexec/PlistBuddy -c 'Print :Label' '$INSTALLED_AGENT_PLIST' | grep -qx com.nxhung.relaydock.edge"
+check "agent plist bakes the config directory" bash -c "/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RELAYDOCK_CONFIG_DIR' '$INSTALLED_AGENT_PLIST' | grep -qx '$CONFIG'"
+check "installer bootstrapped the agent" grep -q "bootstrap gui/$(id -u) $INSTALLED_AGENT_PLIST" "$LAUNCHCTL_RECORD"
+check "installer reported the agent" grep -q "running under launchd agent" "$WORK/install-out"
+check "installer linked the wrapper" test -L "$INSTALL_HOME/.local/bin/opencode"
+
+rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT"
+printf '0\n' > "$LAUNCHCTL_CODES"
+set +e
+HOME="$INSTALL_HOME" PATH="$FAKE_BIN_DIRECTORY:$PATH" RELAYDOCK_CONFIG_DIR="$CONFIG" \
+  bash "$ROOT/scripts/opencode-wrapper.sh" uninstall > "$WORK/uninstall-out" 2>&1
+UNINSTALL_STATUS=$?
+set -e
+check "uninstaller exited zero" test "$UNINSTALL_STATUS" -eq 0
+check "uninstaller booted the agent out" grep -q "bootout gui/$(id -u)/com.nxhung.relaydock.edge" "$LAUNCHCTL_RECORD"
+check "uninstaller removed the agent plist" test ! -f "$INSTALLED_AGENT_PLIST"
+check "uninstaller removed the symlink" test ! -L "$INSTALL_HOME/.local/bin/opencode"
+check "uninstaller reported the agent removal" grep -q "Removed launchd agent" "$WORK/uninstall-out"
 
 echo
 if [[ "$FAILURES" -eq 0 ]]; then

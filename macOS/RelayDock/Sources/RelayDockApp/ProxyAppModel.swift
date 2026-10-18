@@ -31,11 +31,28 @@ final class ProxyAppModel: ObservableObject {
     @Published var isManualChooserPresented = false
     @Published private(set) var errorMessage: String?
     @Published var selectedTab: ProxyAppTab = .routing
+    /// The RelayDock Edge panel, refreshed by `pollEdgeStatusWhileVisible()`.
+    @Published private(set) var edgePanel: EdgePanelState = .unknown
+    /// Which checker the last Test All used — the pool view says so out loud
+    /// when Edge is unreachable and the check fell back in-process.
+    @Published private(set) var lastCheckRoute: CheckRoute?
 
     private let store: ProxyStore
+    private let edgeStatusProvider: @Sendable (EdgeConfigFile) async -> EdgeStatusResponse?
+    private let edgeCheckRunner: @Sendable (EdgeConfigFile) async -> EdgeCheckResponse?
 
-    init(store: ProxyStore = ProxyStore()) {
+    init(
+        store: ProxyStore = ProxyStore(),
+        edgeStatusProvider: @escaping @Sendable (EdgeConfigFile) async -> EdgeStatusResponse? = { config in
+            await EdgeStatusClient.fetchStatusAsync(config: config)
+        },
+        edgeCheckRunner: @escaping @Sendable (EdgeConfigFile) async -> EdgeCheckResponse? = { config in
+            await EdgeStatusClient.runChecksAsync(config: config, scope: .all)
+        }
+    ) {
         self.store = store
+        self.edgeStatusProvider = edgeStatusProvider
+        self.edgeCheckRunner = edgeCheckRunner
     }
 
     var enabledCount: Int { state?.enabledProxies.count ?? 0 }
@@ -150,12 +167,50 @@ final class ProxyAppModel: ObservableObject {
         guard !isTesting, state != nil else { return }
         isTesting = true
         defer { isTesting = false }
-        // RelayDock Edge owns the live script cache. Share the file so a
-        // check here never re-fetches a snapshot Edge resolved (and never trips
-        // the provider's cooldown for Edge's next rotation), then merge what
-        // this check learned back so Edge reuses it too. In P2 the app reads
-        // Edge's status directly and this file becomes an implementation
-        // detail of Edge.
+        // Edge owns the script cache and the checks that feed it: delegate so
+        // the provider sees one checker. When Edge does not answer — not
+        // installed, not running — fall back to the in-process path and let
+        // the pool view say so.
+        if let config = loadEdgeConfig(), let response = await edgeCheckRunner(config) {
+            await applyEdgeCheckResults(response)
+            return
+        }
+        lastCheckRoute = .inApp
+        await runInAppChecks()
+    }
+
+    private func applyEdgeCheckResults(_ response: EdgeCheckResponse) async {
+        var health: [String: ProxyHealth] = [:]
+        var deferredReasons: [String] = []
+        for (id, result) in response.results {
+            if result.deferred {
+                deferredReasons.append(result.error ?? "deferred")
+                continue
+            }
+            health[id] = ProxyHealth(
+                ok: result.ok,
+                latencyMs: result.latencyMs,
+                checkedAt: result.checkedAt,
+                error: result.error
+            )
+        }
+        do {
+            state = try store.applyCheckResults(health)
+            lastCheckRoute = .edge
+            errorMessage = deferredReasons.isEmpty
+                ? nil
+                : "RelayDock Edge deferred \(deferredReasons.count) check\(deferredReasons.count == 1 ? "" : "s"): \(deferredReasons[0])"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refreshEdgeStatus()
+    }
+
+    private func runInAppChecks() async {
+        // Edge is unreachable: run the checks here, but still share the
+        // script-cache file so a check never re-fetches a snapshot Edge
+        // resolved (and never trips the provider's cooldown for Edge's next
+        // rotation), then merge what this check learned back.
         let cacheFileURL = store.fileURL.deletingLastPathComponent().appending(path: ScriptCacheFile.fileName)
         if let current = state {
             importProxyScriptCacheSnapshots(ScriptCacheFile.load(from: cacheFileURL).snapshots(matching: current))
@@ -169,6 +224,80 @@ final class ProxyAppModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: - RelayDock Edge panel
+
+    /// `edge.json` next to `proxies.json` — the file the installer writes and
+    /// the launcher hands to wrapped processes.
+    private var edgeConfigURL: URL {
+        store.fileURL.deletingLastPathComponent().appending(path: "edge.json")
+    }
+
+    private func loadEdgeConfig() -> EdgeConfigFile? {
+        EdgeConfigFile.load(from: edgeConfigURL)
+    }
+
+    /// Refreshes the panel: a missing `edge.json` reads as not configured and
+    /// an unanswered poll as not running — never as an error.
+    func refreshEdgeStatus() async {
+        guard let config = loadEdgeConfig() else {
+            edgePanel = .notConfigured
+            return
+        }
+        if let status = await edgeStatusProvider(config) {
+            edgePanel = .running(status)
+        } else {
+            edgePanel = .notRunning
+        }
+    }
+
+    /// Polls the daemon while a surface is visible; views drive this from
+    /// `.task`, so closing the window or the menu bar popover cancels it.
+    func pollEdgeStatusWhileVisible() async {
+        while !Task.isCancelled {
+            await refreshEdgeStatus()
+            do {
+                try await Task.sleep(for: .seconds(3))
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Recent tunnels grouped by client process — the panel's "who used Edge"
+    /// list. Processes with active tunnels sort first, then by last activity.
+    var edgeAttribution: [EdgeAttribution] {
+        guard case .running(let status) = edgePanel else { return [] }
+        var byKey: [String: EdgeAttribution] = [:]
+        for tunnel in status.tunnels {
+            let key = tunnel.peerPid.map(String.init) ?? "unknown"
+            var summary = byKey[key] ?? EdgeAttribution(
+                id: key,
+                name: tunnel.peerName ?? "Unknown process",
+                pid: tunnel.peerPid,
+                tunnels: 0,
+                activeTunnels: 0,
+                bytesDown: 0,
+                lastActivity: tunnel.startedAt
+            )
+            summary.tunnels += 1
+            if tunnel.active { summary.activeTunnels += 1 }
+            summary.bytesDown += tunnel.bytesDown
+            summary.lastActivity = max(summary.lastActivity, tunnel.endedAt ?? tunnel.startedAt)
+            byKey[key] = summary
+        }
+        return byKey.values.sorted { lhs, rhs in
+            if (lhs.activeTunnels > 0) != (rhs.activeTunnels > 0) {
+                return lhs.activeTunnels > 0
+            }
+            return lhs.lastActivity > rhs.lastActivity
+        }
+    }
+
+    /// Seeds the panel without touching the network (fixtures and tests).
+    func applyEdgePanelForFixtures(_ panel: EdgePanelState) {
+        edgePanel = panel
     }
 
     func clearError() {

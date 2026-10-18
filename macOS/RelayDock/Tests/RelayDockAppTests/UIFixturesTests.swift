@@ -64,6 +64,74 @@ private struct FixtureScenario {
 }
 
 private extension UIFixturesTests {
+    /// A status shaped like a busy install: one live tunnel, a quiet recent
+    /// history, and the counters the Edge panel renders.
+    static func edgeLiveStatus(now: Double = Date().timeIntervalSince1970) -> EdgeStatusResponse {
+        EdgeStatusResponse(
+            pid: 39_179,
+            port: 57_211,
+            mode: .auto,
+            upstream: .init(
+                entryID: "px_gateway_east",
+                label: "Gateway East",
+                maskedURL: "http://gateway.example:8080",
+                source: "static",
+                resolvedAt: now - 240,
+                expiresAt: now + 540
+            ),
+            lastErrors: ["dial timeout to gateway.example:8080"],
+            counters: .init(
+                resolutions: 23,
+                switches: 0,
+                dialFailures: 84,
+                streamFailures: 17,
+                tunnelsTotal: 35,
+                tunnelsActive: 1
+            ),
+            tunnels: [
+                .init(
+                    clientPort: 51_001,
+                    peerPid: 39_179,
+                    peerName: "opencode",
+                    label: "Gateway East",
+                    startedAt: now - 120,
+                    bytesUp: 18_000,
+                    bytesDown: 4_200_000,
+                    active: true
+                ),
+                .init(
+                    clientPort: 51_002,
+                    peerPid: 39_179,
+                    peerName: "opencode",
+                    label: "Gateway East",
+                    startedAt: now - 600,
+                    endedAt: now - 480,
+                    bytesUp: 21_000,
+                    bytesDown: 6_100_000,
+                    active: false
+                ),
+                .init(
+                    clientPort: 51_003,
+                    peerPid: 40_222,
+                    peerName: "opencode",
+                    label: "Gateway East",
+                    startedAt: now - 1_500,
+                    endedAt: now - 1_400,
+                    bytesUp: 9_000,
+                    bytesDown: 1_800_000,
+                    active: false
+                ),
+            ],
+            launchedAt: now - 3_600
+        )
+    }
+
+    static func edgeLiveModel() throws -> ProxyAppModel {
+        let model = try makeModel(mode: .auto, proxies: mixedPool)
+        model.applyEdgePanelForFixtures(.running(edgeLiveStatus()))
+        return model
+    }
+
     static func scenarios() throws -> [FixtureScenario] {
         let bothSchemes: [ColorScheme] = [.dark, .light]
         let windowSize = CGSize(width: 680, height: 460)
@@ -73,6 +141,12 @@ private extension UIFixturesTests {
                 size: windowSize,
                 schemes: bothSchemes,
                 content: window(try makeModel(mode: .auto, proxies: mixedPool))
+            ),
+            FixtureScenario(
+                name: "routing-auto-edge-live",
+                size: windowSize,
+                schemes: bothSchemes,
+                content: window(try edgeLiveModel())
             ),
             FixtureScenario(
                 name: "routing-manual",

@@ -372,13 +372,25 @@ public struct ProxyStore: Sendable {
             }
             return checked
         }
-        // Network checks suspend; merge results into the latest saved state rather than
-        // saving the stale snapshot captured before the checks began.
+        return try applyCheckResults(results, fingerprintGuard: fingerprints)
+    }
+
+    /// Records check results into the latest saved state — network checks
+    /// suspend, so saving the snapshot captured before they began would drop
+    /// concurrent edits. `fingerprintGuard`, when set, skips entries whose
+    /// definition changed mid-check. Delegated checks from RelayDock Edge
+    /// flow through here too: Edge checked the same pool file, so a guard is
+    /// not meaningful on that path.
+    @discardableResult
+    public func applyCheckResults(
+        _ results: [String: ProxyHealth],
+        fingerprintGuard: [String: String]? = nil
+    ) throws -> ProxyState {
         var latestState = try load()
         for index in latestState.proxies.indices {
             let entry = latestState.proxies[index]
-            guard fingerprints[entry.id] == entry.checkFingerprint,
-                  let result = results[entry.id] else { continue }
+            if let fingerprintGuard, fingerprintGuard[entry.id] != entry.checkFingerprint { continue }
+            guard let result = results[entry.id] else { continue }
             latestState.proxies[index].health = result
         }
         return try save(latestState)
