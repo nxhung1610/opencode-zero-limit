@@ -1,12 +1,17 @@
-# RelayDock proxy system — design proposal
+# RelayDock proxy system — design and as-built record
 
-**Status:** Proposal — not implemented. Review and approval required before scheduling work.
+**Status:** implemented — P0, P1, P2a, and P2 shipped (§7 is the phase ledger). P3 items remain
+optional and unbuilt.
+
+**Revision r3 (2026-10-18):** records P2 (app integration) as built — launchd KeepAlive agent,
+launcher kickstart path, agent-aware `stop`, delegated health checks, the Edge status panel, and
+the verification wording — and closes the §9 questions the implementation settled.
 
 **Revision r2 (2026-10-17):** incorporates an adversarial review round. Changes: token-gated
 identity (macOS exposes no usable TCP peer credentials — verified empirically), retry-on-dial
 failover, single-writer state discipline, port/spawn-race contracts, and added P1 acceptance tests.
 
-**Supersedes, on acceptance:** the spawn-time environment-injection model for the PATH wrapper
+**Supersedes:** the spawn-time environment-injection model for the PATH wrapper
 (`README.md` → “PATH wrapper for OpenCode”) and its cross-launch script cache.
 
 **Scope:** macOS 14+, local-only, fail-closed. Covers the RelayDock app, `RelayDockCore`, the
@@ -113,8 +118,11 @@ by Edge instead of at spawn time.
 - A tunnel that dies mid-stream or stalls (request bytes flowed, no response byte for 30 s, the
   client gives up) schedules a near-term re-check (≤30 s) through a fresh endpoint, so a zombie
   provider cannot hide behind an open-but-silent tunnel.
-- The app’s `Test`/`Check All` delegates to `POST /__relaydock/check`; the app falls back to its
-  in-process path only when Edge is not running (degraded mode, warned in UI).
+- The app’s `Test All` delegates to `GET /__relaydock/check?scope=all` whenever `edge.json` exists
+  and Edge answers; deferred results are surfaced, not recorded. The app falls back to its
+  in-process path only when Edge is not configured or unreachable (degraded mode; the pool view
+  says which route ran). Checks are diagnostics, not routing: Edge answers `/check` in Off mode
+  too, while the periodic scheduler still skips Off.
 - **Persistence discipline:** `proxies.json` stays single-writer (the app, always — P1 and beyond;
   Edge reports check results, the app persists them). Edge’s live health lives in Edge state and
   the status API; Auto eligibility uses that live view, not the file’s last snapshot. Reads
@@ -131,7 +139,7 @@ by Edge instead of at spawn time.
 | Mode switched to Off while processes hold Edge env | Edge forwards direct (transparent); fresh launches get no env at all. |
 | Upstream dies mid-tunnel | Tunnel drops; the next dial re-resolves single-flight and is retried once internally; 502 only when nothing is usable. A death or zero-byte stall on an established tunnel also counts as a strike (first-ender classification: client-induced cancels never strike), drops the script snapshot, re-resolves immediately when a mode is active, and raises `streamFailures`. The dead request itself is never retried — bytes were already in flight. |
 | Refusal inside a provider cooldown | The `502` carries `Retry-After: <whole seconds>` built from the pending `retryAt`; the absence of the header means "retry whenever". |
-| Edge crash | Capability lost until next launch/app contact respawns it; P2 adds a launchd KeepAlive agent to shrink the window. |
+| Edge crash | The launchd KeepAlive agent restarts it within its throttle (`SuccessfulExit: false` — a clean loser-exit never respawn-loops); without the agent, the next launch/app contact respawns it. |
 | Edge cannot bind its port | Edge exits loudly (boot error in `edge.log`); the launcher refuses with a port-conflict/reinstall hint. Ports never renumber silently once consumers hold the env. |
 | Provider rate-limited during resolve | Serve old upstream; `retryAt` in status; health untouched. |
 
@@ -157,9 +165,11 @@ by Edge instead of at spawn time.
   a `pf` rule matching the user (P3, needs root; not on the critical path).
 - Because Edge sees real tunnels keyed by peer process, RelayDock can finally report
   **evidence** — e.g. “OpenCode service (pid) tunneled 12 connections via BestProxy xoay, last
-  2 min ago”. The project’s honesty line evolves from “cannot verify traffic” to “verifies
-  Edge-routed traffic only; direct traffic stays invisible.” Wording change is a product
-  decision tracked in §9.
+  2 min ago”. **Shipped wording (r3):** “RelayDock verifies traffic that routes through Edge;
+  direct traffic stays invisible.” — used in the app footer, menu bar panel, installer hint, and
+  docs. The Routing tab’s Edge section and the menu bar’s Edge line render this evidence live
+  from `/__relaydock/status` (polled while a surface is visible; a miss reads as “not running”,
+  never as an error).
 
 ## 5. Files, ports, lifecycle
 
@@ -172,9 +182,16 @@ by Edge instead of at spawn time.
   status ping fails; Edge stays resident while the user is logged in (it must outlive prompts of
   the long-running service). Concurrent spawns are safe: the port bind is the mutex, and a loser
   verifies the winner is healthy and exits silently (no error noise).
-- **KeepAlive (P2):** a login-shell `launchd` agent; the app ships it via `SMAppService` once the
-  app is signed — unsigned/CLI-only installs use the installer-provided plist (the supported path
-  for local builds today).
+- **KeepAlive (P2, shipped):** the installer writes
+  `~/Library/LaunchAgents/com.nxhung.relaydock.edge.plist` — generated by
+  `relaydock-edge agent-plist`, so the plist and the binary agree on one label — and bootstraps
+  it. The job bakes `RELAYDOCK_CONFIG_DIR`; a baked config dir scopes the agent, so a plist for
+  another config dir never boots out the login-session agent. `RunAtLoad` +
+  `KeepAlive { SuccessfulExit: false }`: a crash restarts within the 15 s throttle, while a clean
+  quiet-exit loser (exit 0) does not respawn-loop. The launcher kickstarts a loaded agent (or
+  bootstraps an unloaded one) before falling back to spawning the binary; `relaydock-edge stop`
+  boots the managing agent out when one manages this config dir, else asks the daemon to exit.
+  App-side `SMAppService` remains gated on signing.
 - **Script cache:** Edge-owned `<config>/script-cache.json` (existing snapshot format/API); one-time
   import of the legacy `launcher-cache.json` if present. No other process reads or writes it.
 - **service activation** stays manual and one-time: after installing (or if the service currently
@@ -211,9 +228,13 @@ by Edge instead of at spawn time.
   `streamFailures` counter (additive field; older binaries still decode). Tests: unit suite plus
   hermetic sandbox scenarios (mid-stream death, zero-byte stall, cooldown); `scripts/tps-bench.sh`
   measures wrapped-vs-direct TPS read back from the OpenCode database.
-- **P2 — App integration:** status panel, delegated checks, Edge lifecycle (KeepAlive agent;
-  `SMAppService` needs a signed app, installer plist until then), service attribution UI, product
-  wording for verified-edge-traffic.
+- **P2 — App integration (implemented):** launchd KeepAlive agent, launcher kickstart path, and
+  agent-aware `stop` (§5); `Test All` delegating to Edge’s `/check?scope=all` with a labeled
+  in-process fallback; Routing tab Edge panel (mode, upstream + expiry, counters, cooldown, last
+  error, tunnel attribution grouped by peer process) polled from `/status` while a
+  window/popover is visible; menu bar Edge line; the honesty wording shipped across app, menu
+  bar, installer hint, and docs; sandbox scenarios for agent wiring, kickstart, and
+  bootout-on-stop.
 - **P3 — Optional:** launchd socket activation (Edge starts on first connection), upstream
   connection pooling, per-account ports for multi-binding use.
 
@@ -228,14 +249,16 @@ by Edge instead of at spawn time.
 | PAC / Network Extension / transparent interception | System-wide blast radius, entitlements/signing burden, and TLS MITM — all out of product scope. |
 | Configure proxy inside OpenCode’s own config instead of env | No documented, stable interface for it; env proxying is the mechanism already proven end-to-end (Docker E2E against the real binary). |
 
-## 9. Open questions (need answers before P1 closes)
+## 9. Questions and resolutions
 
-1. Product wording for the verification upgrade in §4.4 — update `PRODUCT.md`/README honesty text in
-   the same change as the app status panel, or keep current wording until P2 ships?
+1. ~~Product wording for the verification upgrade in §4.4~~ **Resolved in r3 (P2):** shipped as
+   “RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.”
 2. ~~Status API hardening via TCP peer credentials~~ **Resolved in r2:** unusable on macOS
    (verified); replaced by the per-install token gate (§4.4).
-3. Port policy: fixed default `57211` with installer probing — acceptable, or prefer a
-   deterministic derivation (e.g. hash of home path) to avoid cross-machine drift in docs?
-4. Edge ownership of periodic health checks: default cadence 10 min OK against the provider’s
-   cooldowns, or derive from `retryAfter`/lifetime only (no fixed timer)?
-5. P1 lifecycle: spawn-on-demand only (recommended) or ship the launchd agent in P1 too?
+3. ~~Port policy~~ **Resolved in P1:** fixed default `57211` with installer probing and the
+   immutable-once-consumed contract (§5); no derivation scheme.
+4. ~~Edge ownership of periodic health checks~~ **Resolved in P2a/P2:** 10-minute cadence with
+   backoff re-checks, plus near-term re-checks after mid-stream failures (§4.2).
+5. ~~P1 lifecycle~~ **Resolved in P2:** spawn-on-demand in P1; the launchd agent shipped in P2 (§5).
+6. **Open (P3):** whether socket activation, upstream pooling, and per-account ports are worth
+   building — tracked as optional work in §7.

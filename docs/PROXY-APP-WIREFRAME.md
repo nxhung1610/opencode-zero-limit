@@ -1,6 +1,6 @@
 # RelayDock proxy app — wireframe variants
 
-**Status:** implemented as the initial config-only SwiftUI app. The figures below remain the design reference; the shipped MVP does not launch or control OpenCode processes.
+**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, and menu bar Edge line (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
 
 ## Reference
 
@@ -16,7 +16,7 @@ Borrow the information hierarchy and native macOS density—not Mos's colors, ic
 - Compact native macOS window, suggested **680 × 460 pt**, resizable; target a usable minimum near **600 × 400 pt**.
 - Tabs are top-aligned icon + label controls. The Routing page owns Off/Manual/Auto; the Proxy Pool page owns import and tests.
 - No account, usage, app settings, or server start/stop controls.
-- A saved policy or successful endpoint check is not proof that OpenCode traffic used that route. Keep that distinction visible on both tabs.
+- A saved policy or successful endpoint check is not proof that OpenCode traffic used that route. The shipped honesty line is Edge-specific — "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible." — and appears on both tabs and in the menu bar.
 - Only explicit Off allows direct routing. Manual/Auto errors must never be converted into Off silently.
 
 ## Variant A — Mos-style Preferences tabs (recommended)
@@ -39,7 +39,7 @@ Borrow the information hierarchy and native macOS density—not Mos's colors, ic
 │                   Unchecked proxies may be eligible.                 │
 │                                                                      │
 │  Policy           Saved locally                                      │
-│                   Live OpenCode traffic is not verified.             │
+│                 Verifies Edge-routed traffic; direct stays invisible. │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -60,7 +60,7 @@ Borrow the information hierarchy and native macOS density—not Mos's colors, ic
 │  local-debug        127.0.0.1:8888              Failed          [On] │
 │                                                                      │
 │  Select a row to reveal details and actions.                         │
-│  Health checks do not verify OpenCode traffic.                       │
+│  Only Edge-routed traffic is verified; direct stays invisible.       │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -142,7 +142,14 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 - The top tab row contains **Routing** and **Proxy Pool** only—no filler About/Updates tab.
 - **Routing:** Off explicitly permits direct routing; Manual requires one enabled, valid proxy; Auto shows enabled/eligible counts and fails closed when none is usable.
 - **Proxy Pool:** `Test All` checks enabled entries, `+ Import` opens a multiline import sheet, and each proxy shows text health state plus enabled state.
-- Failed checks remain endpoint-check results, not proof about live OpenCode traffic. Unknown health is distinct from failed health.
+- Failed checks remain endpoint-check results, not proof about live OpenCode traffic; only Edge's tunnel accounting speaks to real traffic, and only to the traffic that routes through Edge. Unknown health is distinct from failed health.
 - If Manual has no valid selection, keep the previous policy and prompt for a proxy. Never silently switch to Off.
 - Preserve pasted import text after validation errors and show invalid line numbers; mask credentials in labels, previews, and errors.
 - Use Aqua/system colors and controls in Light and Dark appearance. Pair color with a label/symbol, expose tab and control states to VoiceOver, and keep keyboard focus order visible.
+
+## Implemented additions (P2)
+
+- **Routing tab — RelayDock Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar popover is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
+- **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers; deferred results are reported, not recorded. When Edge is unreachable the check falls back in-process and the pool header says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
+- **Menu bar — Edge line:** `Edge · <mode> · <upstream label | Direct | No upstream> · <active tunnels>` beneath the status line; `Edge · not running` when the daemon does not answer. Hidden entirely when Edge is not configured.
+- **Honesty line (window footer + menu bar):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."

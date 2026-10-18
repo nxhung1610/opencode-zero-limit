@@ -1,6 +1,6 @@
 # RelayDock for macOS
 
-RelayDock is a compact native SwiftUI utility for managing a local proxy pool and its Off/Manual/Auto policy. It can import proxies and test enabled endpoints. It does **not** launch or restart OpenCode or verify live OpenCode traffic; an optional PATH wrapper (see [PATH wrapper for OpenCode](#path-wrapper-for-opencode)) pairs with **RelayDock Edge** — a small loopback daemon — so new `opencode` launches receive one stable proxy environment and the upstream rotates live without restarting anything.
+RelayDock is a compact native SwiftUI utility for managing a local proxy pool and its Off/Manual/Auto policy. It can import proxies, test enabled endpoints, and — with the optional PATH wrapper (see [PATH wrapper for OpenCode](#path-wrapper-for-opencode)) — show what **RelayDock Edge**, a small loopback daemon, is actually doing: the live upstream, rotation counters, and per-process tunnel attribution for everything routed through it. The app does **not** launch or restart OpenCode, and Edge verifies only the traffic that routes through it; direct traffic stays invisible.
 
 **Platform:** macOS 14 or later. **Language:** Swift 6.
 
@@ -12,9 +12,10 @@ RelayDock is a compact native SwiftUI utility for managing a local proxy pool an
 - Save Off, Manual, or Auto policy. Manual and Auto configuration remains fail-closed; invalid or missing routes are not silently changed to Off.
 - Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
 - Provide `RelayDockCore` helpers for consumers that launch their own child process and need to select a route and construct proxy environment variables.
-- Optionally install a PATH wrapper (`scripts/opencode-wrapper.sh install`) so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. Fail-closed on routing errors; Off mode never contacts Edge.
+- Optionally install a PATH wrapper (`scripts/opencode-wrapper.sh install`) so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop). Fail-closed on routing errors; Off mode never contacts Edge.
+- Show Edge's live status in the app: a RelayDock Edge section on the Routing tab and a compact line in the menu bar popover — mode, upstream with expiry, rotation/failure counters, provider cooldown, and recent tunnels attributed to the peer process that opened them. `Test All` delegates health checks to Edge (the owner of the script cache) and falls back in-process, labeled in the pool view, only when Edge is unreachable.
 
-A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy.
+A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy — only Edge's tunnel accounting speaks to real traffic, and it says nothing about traffic that bypasses Edge: **RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.**
 
 ## Build, test, and run
 
@@ -75,15 +76,15 @@ return cache.url;
 `scripts/opencode-wrapper.sh` installs an opt-in wrapper that applies the saved policy to new terminal `opencode` launches. The wrapper is deliberately thin: it reads `<config>/edge.json`, ensures **RelayDock Edge** is running, prints the routing line from Edge's status, and replaces itself with `opencode` under a **constant** proxy environment. Edge owns live resolution, rotation, health checks, and the script cache.
 
 ```sh
-scripts/opencode-wrapper.sh install    # builds if needed; installs relaydock-launch + relaydock-edge; writes <config>/edge.json on first install
-scripts/opencode-wrapper.sh status     # wrapper paths + live Edge status (equivalent: relaydock-edge status)
-scripts/opencode-wrapper.sh uninstall  # stops Edge; removes the symlink, both binaries, and edge.json
+scripts/opencode-wrapper.sh install    # builds if needed; installs relaydock-launch + relaydock-edge; writes <config>/edge.json on first install; bootstraps the launchd KeepAlive agent
+scripts/opencode-wrapper.sh status     # wrapper paths, agent state, + live Edge status (equivalent: relaydock-edge status)
+scripts/opencode-wrapper.sh uninstall  # boots out the agent; stops Edge; removes the symlink, both binaries, and edge.json
 ```
 
 Each launch:
 
 - Reads `edge.json` (loopback port + per-install token). The port never renumbers silently once consumers hold the environment: if Edge cannot bind at runtime it exits loudly (`edge.log`) and the launcher refuses with a reinstall hint.
-- Spawns `relaydock-edge` detached if it is not already answering — spawn-on-demand, so no login item or service is needed. Concurrent spawns are safe; the loser exits quietly.
+- Ensures Edge is running: a loaded KeepAlive agent is kickstarted (bootstrapped first if not loaded), otherwise `relaydock-edge` is spawned detached. Concurrent starts are safe; the loser exits quietly, and `KeepAlive { SuccessfulExit: false }` means a clean loser-exit never respawn-loops.
 - Prints one line to stderr from Edge's live status — `RelayDock: routed via Edge on 127.0.0.1:<port> — <entry> (<masked URL>)`, or a "first request resolves the upstream" note when Edge has not resolved yet; set `RELAYDOCK_QUIET=1` to silence it.
 - Sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (and lowercase variants) to the constant `http://<token>:@127.0.0.1:<port>`, merges `NO_PROXY=localhost,127.0.0.1` so the local OpenCode server keeps working, and removes `OPENCODE_SERVER_*` variables from the child environment. (The colon after the token is load-bearing: OpenCode's HTTP stack only sends `Proxy-Authorization` for a `username:password` userinfo; verified against the real binary.)
 - Fails closed — exit 1, command not started, reinstall hint — when `edge.json` is missing or damaged or when Edge cannot be reached or started after spawning. Never a silent direct launch. Off mode launches the command with no proxy variables and never contacts Edge.
@@ -111,7 +112,7 @@ lsof -nP -iTCP -a -p <opencode pid> | grep ESTABLISHED
 relaydock-edge status
 ```
 
-`scripts/launcher-sandbox-test.sh` exercises the wrapper and Edge end-to-end against a stub command and local fake provider/proxies — cold start, warm sticky launch, live rotation, script-edit invalidation, the token gate, fail-closed paths, the spawn race, crash respawn, and job control — with no real OpenCode CLI, accounts, or network.
+`scripts/launcher-sandbox-test.sh` exercises the wrapper, Edge, and the installer end-to-end against a stub command, a fake `launchctl`, and local fake provider/proxies — cold start, warm sticky launch, live rotation, script-edit invalidation, the token gate, fail-closed paths, the spawn race, crash respawn, Off-mode checks, agent kickstart/bootout, and job control — with no real OpenCode CLI, accounts, or network.
 
 ## Scope
 
