@@ -32,7 +32,6 @@ struct RoutingView: View {
                 }
             }
             .formStyle(.grouped)
-            .frame(maxWidth: 560)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 16)
         }
