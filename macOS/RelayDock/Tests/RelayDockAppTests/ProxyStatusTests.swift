@@ -47,4 +47,36 @@ import Testing
         #expect(ProxyStatus.color(for: entry(health: ProxyHealth(ok: true)), isTesting: false) == .secondary)
         #expect(ProxyStatus.color(for: entry(enabled: false, health: ProxyHealth(ok: false)), isTesting: false) == .secondary)
     }
+
+    @Test func checkedAgoReadsMillisecondTimestamps() {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let recent = entry(health: ProxyHealth(ok: true, latencyMs: 8, checkedAt: 1_759_999_880_000))
+        #expect(ProxyStatus.checkedAgo(for: recent, now: now) == "2m ago")
+    }
+
+    @Test func checkedAgoHidesLegacySecondsTimestamps() {
+        let legacy = entry(health: ProxyHealth(ok: true, latencyMs: 8, checkedAt: 1_760_000_000))
+        #expect(ProxyStatus.checkedAgo(for: legacy, now: Date()) == nil)
+    }
+
+    @Test func checkedAgoCoversFreshHoursAndDays() {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let fresh = entry(health: ProxyHealth(ok: true, checkedAt: 1_759_999_990_000))
+        #expect(ProxyStatus.checkedAgo(for: fresh, now: now) == "just now")
+        let hourly = entry(health: ProxyHealth(ok: true, checkedAt: 1_759_995_400_000))
+        #expect(ProxyStatus.checkedAgo(for: hourly, now: now) == "1h ago")
+        let daily = entry(health: ProxyHealth(ok: true, checkedAt: 1_759_827_200_000))
+        #expect(ProxyStatus.checkedAgo(for: daily, now: now) == "2d ago")
+    }
+
+    @Test func detailCarriesErrorAndAge() {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let failed = entry(health: ProxyHealth(ok: false, checkedAt: 1_759_999_880_000, error: "Connection refused"))
+        #expect(ProxyStatus.detail(for: failed, now: now) == "Failed · Connection refused · 2m ago")
+    }
+
+    @Test func detailWithoutHealthOrWhileDisabled() {
+        #expect(ProxyStatus.detail(for: entry()) == "Not tested yet")
+        #expect(ProxyStatus.detail(for: entry(enabled: false)) == "Disabled")
+    }
 }

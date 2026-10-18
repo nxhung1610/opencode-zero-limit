@@ -132,6 +132,21 @@ private extension UIFixturesTests {
         return model
     }
 
+    /// The panel at its fullest: live Edge accounting on top of a pool whose
+    /// checks carry real millisecond timestamps, so freshness ages render too.
+    static func edgeLivePanelModel() throws -> ProxyAppModel {
+        let model = try makeModel(mode: .auto, proxies: recentPool)
+        model.applyEdgePanelForFixtures(.running(edgeLiveStatus()))
+        return model
+    }
+
+    /// Edge nowhere in sight — the panel must stay calm and say so.
+    static func edgeNotRunningModel() throws -> ProxyAppModel {
+        let model = try makeModel(mode: .auto, proxies: recentPool)
+        model.applyEdgePanelForFixtures(.notRunning)
+        return model
+    }
+
     static func scenarios() throws -> [FixtureScenario] {
         let bothSchemes: [ColorScheme] = [.dark, .light]
         let windowSize = CGSize(width: 680, height: 460)
@@ -286,6 +301,30 @@ private extension UIFixturesTests {
                 schemes: [.dark],
                 content: panel(try makeModel(mode: .auto, proxies: overflowPool))
             ),
+            FixtureScenario(
+                name: "panel-auto-edge-live",
+                size: nil,
+                schemes: bothSchemes,
+                content: panel(try edgeLivePanelModel())
+            ),
+            FixtureScenario(
+                name: "panel-edge-notrunning",
+                size: nil,
+                schemes: [.dark],
+                content: panel(try edgeNotRunningModel())
+            ),
+            FixtureScenario(
+                name: "panel-auto-recent",
+                size: nil,
+                schemes: bothSchemes,
+                content: panel(try makeModel(mode: .auto, proxies: recentPool))
+            ),
+            FixtureScenario(
+                name: "panel-manual-valid",
+                size: nil,
+                schemes: [.dark],
+                content: panel(try makeModel(mode: .manual, manualId: "px_gateway_east", proxies: mixedPool))
+            ),
         ]
     }
 
@@ -435,5 +474,38 @@ private extension UIFixturesTests {
                     : ProxyHealth(ok: true, latencyMs: Double(18 + index * 7), checkedAt: 1_760_000_000)
             )
         }
+    }
+
+    /// The everyday mixed pool, but with millisecond check timestamps close to
+    /// now — the shape real checks are stored in, so the panel's "2m ago"
+    /// freshness suffix is exercised.
+    static var recentPool: [ProxyEntry] {
+        let now = Date().timeIntervalSince1970 * 1_000
+        return [
+            ProxyEntry(
+                id: "px_gateway_east",
+                label: "gateway.example",
+                url: "http://gateway.example:8080",
+                health: ProxyHealth(ok: true, latencyMs: 42, checkedAt: now - 120_000)
+            ),
+            ProxyEntry(
+                id: "px_backup_socks",
+                label: "socks.fallback.example",
+                url: "socks5://socks.fallback.example:1080"
+            ),
+            ProxyEntry(
+                id: "px_local_debug",
+                label: "127.0.0.1",
+                url: "http://127.0.0.1:7890",
+                enabled: false,
+                health: ProxyHealth(ok: true, latencyMs: 8, checkedAt: now - 60_000)
+            ),
+            ProxyEntry(
+                id: "px_gateway_west",
+                label: "west.example",
+                url: "https://west.example:8443",
+                health: ProxyHealth(ok: false, checkedAt: now - 5_400_000, error: "Connection refused")
+            ),
+        ]
     }
 }
