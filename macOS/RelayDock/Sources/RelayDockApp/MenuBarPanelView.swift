@@ -17,7 +17,7 @@ struct MenuBarPanelView: View {
             Divider()
             actions
             Divider()
-            Text("Live OpenCode traffic is not verified by this app.")
+            Text("RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -29,6 +29,7 @@ struct MenuBarPanelView: View {
             if model.state == nil && model.loadError == nil {
                 model.load()
             }
+            await model.pollEdgeStatusWhileVisible()
         }
     }
 
@@ -61,6 +62,23 @@ struct MenuBarPanelView: View {
                 .labelsHidden()
 
                 statusLine(state)
+
+                switch model.edgePanel {
+                case .running(let status):
+                    Label(
+                        "Edge · \(status.mode.rawValue.capitalized) · \(status.upstream?.label ?? (status.mode == .off ? "Direct" : "No upstream")) · \(status.counters.tunnelsActive) active",
+                        systemImage: "bolt.horizontal.circle"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                case .notRunning:
+                    Label("Edge · not running", systemImage: "bolt.horizontal.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                case .unknown, .notConfigured:
+                    EmptyView()
+                }
 
                 if let message = model.errorMessage {
                     errorBanner(message)

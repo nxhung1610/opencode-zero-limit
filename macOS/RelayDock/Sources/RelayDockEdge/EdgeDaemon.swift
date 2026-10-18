@@ -556,7 +556,11 @@ actor EdgeDaemon {
 
     @discardableResult
     func runCheck(entryID: String) async -> EdgeCheckOutcome? {
-        guard let state = loadState(), state.mode != .off,
+        // Checks are diagnostics, not routing: they stay available in Off
+        // mode so the app's Test All delegates here in every mode. The
+        // scheduler that calls this method on its own still refuses to run
+        // while routing is Off.
+        guard let state = loadState(),
               let entry = state.proxies.first(where: { $0.id == entryID && $0.enabled }) else { return nil }
         let outcome = await check(entry: entry)
         let now = Date().timeIntervalSince1970

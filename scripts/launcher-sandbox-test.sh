@@ -525,7 +525,15 @@ check "stop booted the agent out" grep -q "bootout gui/$(id -u)/com.nxhung.relay
 check "stop reported the agent unload" grep -q "unloaded launchd agent" "$WORK/stop-out"
 check "the running Edge kept serving (bootout is launchd's job)" test -n "$(edge_pid)"
 
-echo "== scenario 19: the installer wires and unwires the launchd agent =="
+echo "== scenario 19: checks stay available in Off mode =="
+write_store off "$CACHING_SCRIPT"
+curl -s --max-time 30 -X POST -H "Authorization: Bearer $EDGE_TOKEN" \
+  "http://127.0.0.1:$EDGE_PORT/__relaydock/check?scope=all" > "$WORK/off-check.json"
+echo "  off-check body: $(head -c 300 "$WORK/off-check.json" | tr -d '\n')"
+check "off-mode checks still run and return results" grep -q '"px_sandbox"' "$WORK/off-check.json"
+check "the off-mode check produced a per-entry outcome" grep -Eq '"ok":(true|false)' "$WORK/off-check.json"
+
+echo "== scenario 20: the installer wires and unwires the launchd agent =="
 INSTALL_HOME="$WORK/install-home"
 mkdir -p "$INSTALL_HOME"
 rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT" "$WORK/install-out" "$WORK/uninstall-out"

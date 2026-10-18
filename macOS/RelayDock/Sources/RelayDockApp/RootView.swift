@@ -39,7 +39,7 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if model.state != nil {
-                Label("Live OpenCode traffic is not verified by this app.", systemImage: "info.circle")
+                Label("RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.", systemImage: "info.circle")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -52,6 +52,7 @@ struct RootView: View {
             if model.state == nil && model.loadError == nil {
                 model.load()
             }
+            await model.pollEdgeStatusWhileVisible()
         }
         .sheet(isPresented: $model.isManualChooserPresented) {
             ManualProxyChooser(model: model)
