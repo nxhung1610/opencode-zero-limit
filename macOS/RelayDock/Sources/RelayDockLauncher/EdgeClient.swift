@@ -18,6 +18,18 @@ enum EdgeClient {
         environment: [String: String]
     ) throws -> EdgeStatusResponse {
         if let status = EdgeStatusClient.fetchStatus(config: config) { return status }
+        // With the launchd agent installed (P2), wake the job and give launchd
+        // its start window before falling back to a direct spawn.
+        if EdgeLaunchAgent.isInstalled(environment: environment) {
+            let configDirectory = EdgeConfigFile.fileURL(environment: environment).deletingLastPathComponent()
+            if EdgeLaunchAgent.activate(configDirectory: configDirectory, environment: environment) {
+                let agentDeadline = Date().addingTimeInterval(1.5)
+                while Date() < agentDeadline {
+                    Thread.sleep(forTimeInterval: 0.15)
+                    if let status = EdgeStatusClient.fetchStatus(config: config, timeout: 0.5) { return status }
+                }
+            }
+        }
         try spawnEdge(environment: environment)
         let deadline = Date().addingTimeInterval(3.0)
         while Date() < deadline {

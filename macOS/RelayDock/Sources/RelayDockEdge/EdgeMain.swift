@@ -17,6 +17,8 @@ struct EdgeMain {
             runStop(environment: environment)
         case "status":
             runStatus(environment: environment)
+        case "agent-plist":
+            runAgentPlist(environment: environment)
         case "--help", "-h", "help":
             print(usageText)
             exit(0)
@@ -27,12 +29,14 @@ struct EdgeMain {
     }
 
     static let usageText = """
-    Usage: relaydock-edge [run|init|stop|status]
+    Usage: relaydock-edge [run|init|stop|status|agent-plist]
 
-      run     Run the daemon (default); reads edge.json next to proxies.json.
-      init    Write edge.json with a free port and a fresh token (installer).
-      stop    Ask a running Edge instance to shut down.
-      status  Print the live status JSON (exit 1 when not running).
+      run          Run the daemon (default); reads edge.json next to proxies.json.
+      init         Write edge.json with a free port and a fresh token (installer).
+      stop         Stop Edge: unloads the launchd agent when it manages this
+                   install, otherwise asks the running instance to shut down.
+      status       Print the live status JSON (exit 1 when not running).
+      agent-plist  Print the launchd agent plist for this install (installer).
     """
 
     // MARK: - Daemon
@@ -120,6 +124,24 @@ struct EdgeMain {
     // MARK: - Stop
 
     static func runStop(environment: [String: String]) -> Never {
+        // The launchd agent (P2) owns Edge's lifecycle when it is installed
+        // for this config directory: unload the job — the plist stays, and
+        // the next wrapped launch re-arms it. A plain shutdown request would
+        // leave a loaded job ready to respawn Edge, so bootout is the only
+        // honest way to stop a managed Edge.
+        let configDirectory = EdgeConfigFile.fileURL(environment: environment).deletingLastPathComponent()
+        if EdgeLaunchAgent.manages(configDirectory: configDirectory, environment: environment),
+           EdgeLaunchAgent.isLoaded(environment: environment) {
+            guard EdgeLaunchAgent.bootout(environment: environment) else {
+                FileHandle.standardError.write(Data(
+                    "relaydock-edge: could not unload the launchd agent \(EdgeLaunchAgent.label).\n".utf8
+                ))
+                exit(1)
+            }
+            print("Stopped RelayDock Edge (unloaded launchd agent \(EdgeLaunchAgent.label)).")
+            print("The agent plist stays in place; the next wrapped launch re-arms it.")
+            exit(0)
+        }
         let configURL = EdgeConfigFile.fileURL(environment: environment)
         guard let config = EdgeConfigFile.load(from: configURL) else {
             print("RelayDock Edge is not configured; nothing to stop.")
@@ -141,6 +163,64 @@ struct EdgeMain {
         }
         FileHandle.standardError.write(Data("relaydock-edge: the running instance did not stop in time.\n".utf8))
         exit(1)
+    }
+
+    // MARK: - Agent plist
+
+    /// Prints the launchd agent plist (XML) for this install. The installer
+    /// writes it to `~/Library/LaunchAgents/com.nxhung.relaydock.edge.plist`.
+    ///
+    /// `KeepAlive` uses `SuccessfulExit: false` rather than the plain `true`:
+    /// launchd restarts Edge after crashes, but a deliberate quiet exit — the
+    /// port-conflict loser path exits 0 — must not respawn-loop while a
+    /// manually spawned Edge holds the port.
+    static func runAgentPlist(environment: [String: String]) -> Never {
+        guard let executable = ownExecutablePath() else {
+            FileHandle.standardError.write(Data(
+                "relaydock-edge: could not locate this executable for the agent plist.\n".utf8
+            ))
+            exit(1)
+        }
+        let configDirectory = EdgeConfigFile.configDirectory(environment: environment)
+        let agentLog = configDirectory.appending(path: "edge-agent.log").path
+        var plist: [String: Any] = [
+            "Label": EdgeLaunchAgent.label,
+            "ProgramArguments": [executable, "run"],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "ThrottleInterval": 15,
+            "StandardOutPath": agentLog,
+            "StandardErrorPath": agentLog,
+        ]
+        if let override = environment["RELAYDOCK_CONFIG_DIR"],
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            plist["EnvironmentVariables"] = ["RELAYDOCK_CONFIG_DIR": override]
+        }
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            FileHandle.standardOutput.write(data)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "relaydock-edge: could not render the agent plist (\(error.localizedDescription)).\n".utf8
+            ))
+            exit(1)
+        }
+        exit(0)
+    }
+
+    /// `_NSGetExecutablePath` plus `realpath`, so the plist points at the
+    /// installed binary rather than a transient build path.
+    static func ownExecutablePath() -> String? {
+        var size = UInt32(PATH_MAX)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
+        guard let resolved = realpath(buffer, nil) else {
+            return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+        defer { free(resolved) }
+        let bytes = UnsafeBufferPointer(start: resolved, count: strlen(resolved))
+            .map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     // MARK: - Status
