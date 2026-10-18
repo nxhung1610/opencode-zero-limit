@@ -62,13 +62,37 @@ struct EdgeMain {
         let log = EdgeLog(url: directory.appending(path: "edge.log"))
         log.info("boot: pid \(getpid()), port \(config.port), config directory \(directory.path)")
 
-        let daemon = EdgeDaemon(config: config, directory: directory, log: log)
-        let server: EdgeServer
+        let listenerReport = EdgeListenerReport()
+        let daemon = EdgeDaemon(config: config, directory: directory, log: log, listenerReport: listenerReport)
+        var servers: [EdgeServer] = []
         do {
-            server = try EdgeServer(config: config, daemon: daemon, log: log)
+            servers.append(try EdgeServer(
+                config: config, daemon: daemon, log: log,
+                role: .primary, listenerReport: listenerReport
+            ))
         } catch {
             log.error("boot: \(error.localizedDescription)")
             exit(1)
+        }
+        for (index, listener) in config.listeners.enumerated() {
+            guard let port = UInt16(exactly: listener.port) else {
+                log.warn("listener: port \(listener.port) is out of range; skipping")
+                continue
+            }
+            do {
+                servers.append(try EdgeServer(
+                    config: config, daemon: daemon, log: log,
+                    role: .pinned(entryID: listener.entryID),
+                    port: port,
+                    activationName: EdgeSocketActivation.listenerName(index: index),
+                    listenerReport: listenerReport
+                ))
+            } catch {
+                log.warn(
+                    "listener: could not open 127.0.0.1:\(listener.port) for \(listener.entryID) "
+                    + "(\(error.localizedDescription)); skipping"
+                )
+            }
         }
 
         var signalSources: [DispatchSourceSignal] = []
@@ -84,12 +108,12 @@ struct EdgeMain {
             signalSources.append(source)
         }
 
-        server.start()
+        for server in servers { server.start() }
 
         // `dispatchMain()` never returns; without this, the release optimizer
-        // may release `server` (and the signal sources) at their last use,
+        // may release the servers (and the signal sources) at their last use,
         // leaving a bound port whose handlers are silent no-ops.
-        withExtendedLifetime((server, signalSources)) {
+        withExtendedLifetime((servers, signalSources)) {
             dispatchMain()
         }
     }
@@ -167,34 +191,69 @@ struct EdgeMain {
 
     // MARK: - Agent plist
 
-    /// Prints the launchd agent plist (XML) for this install. The installer
-    /// writes it to `~/Library/LaunchAgents/com.nxhung.relaydock.edge.plist`.
+    /// The launchd agent property list. Pure so tests can pin its shape.
     ///
     /// `KeepAlive` uses `SuccessfulExit: false` rather than the plain `true`:
     /// launchd restarts Edge after crashes, but a deliberate quiet exit — the
     /// port-conflict loser path exits 0 — must not respawn-loop while a
     /// manually spawned Edge holds the port.
-    static func runAgentPlist(environment: [String: String]) -> Never {
-        guard let executable = ownExecutablePath() else {
-            FileHandle.standardError.write(Data(
-                "relaydock-edge: could not locate this executable for the agent plist.\n".utf8
-            ))
-            exit(1)
-        }
+    ///
+    /// `Sockets` (P3) hands the loopback listeners to launchd: it holds them
+    /// across Edge restarts and starts Edge on the first connection, so no
+    /// consumer races a cold start and the port can never be taken by a
+    /// foreign process. With sockets declared, `RunAtLoad` stays false — Edge
+    /// exists only while it has traffic. Without an `edge.json` (a hand-rolled
+    /// setup that skipped `init`), the classic RunAtLoad-only job is emitted.
+    static func agentPlist(environment: [String: String]) -> [String: Any]? {
+        guard let executable = ownExecutablePath() else { return nil }
         let configDirectory = EdgeConfigFile.configDirectory(environment: environment)
         let agentLog = configDirectory.appending(path: "edge-agent.log").path
         var plist: [String: Any] = [
             "Label": EdgeLaunchAgent.label,
             "ProgramArguments": [executable, "run"],
-            "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false],
             "ThrottleInterval": 15,
             "StandardOutPath": agentLog,
             "StandardErrorPath": agentLog,
         ]
+        if let config = EdgeConfigFile.load(from: EdgeConfigFile.fileURL(environment: environment)) {
+            var sockets: [String: Any] = [
+                EdgeSocketActivation.primaryName: Self.socketSpec(port: config.port)
+            ]
+            for (index, listener) in config.listeners.enumerated() {
+                sockets[EdgeSocketActivation.listenerName(index: index)] = Self.socketSpec(port: listener.port)
+            }
+            plist["Sockets"] = sockets
+            plist["RunAtLoad"] = false
+        } else {
+            plist["RunAtLoad"] = true
+        }
         if let override = environment["RELAYDOCK_CONFIG_DIR"],
            !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             plist["EnvironmentVariables"] = ["RELAYDOCK_CONFIG_DIR": override]
+        }
+        return plist
+    }
+
+    /// One launchd socket spec: IPv4 loopback, stream, TCP.
+    static func socketSpec(port: Int) -> [String: Any] {
+        [
+            "SockFamily": "IPv4",
+            "SockNodeName": "127.0.0.1",
+            "SockServiceName": port,
+            "SockType": "stream",
+            "SockProtocol": "TCP",
+        ]
+    }
+
+    /// Prints the launchd agent plist (XML) for this install. The installer
+    /// writes it to `~/Library/LaunchAgents/com.nxhung.relaydock.edge.plist`.
+    static func runAgentPlist(environment: [String: String]) -> Never {
+        guard let plist = agentPlist(environment: environment) else {
+            FileHandle.standardError.write(Data(
+                "relaydock-edge: could not locate this executable for the agent plist.\n".utf8
+            ))
+            exit(1)
         }
         do {
             let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)

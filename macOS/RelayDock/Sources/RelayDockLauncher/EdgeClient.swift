@@ -22,6 +22,16 @@ enum EdgeClient {
         // its start window before falling back to a direct spawn.
         if EdgeLaunchAgent.isInstalled(environment: environment) {
             let configDirectory = EdgeConfigFile.fileURL(environment: environment).deletingLastPathComponent()
+            // Socket activation (P3): launchd already holds the listener, so
+            // the failed ping above was itself the wake signal — give Edge its
+            // start window before nudging launchctl at all.
+            if EdgeLaunchAgent.usesSocketActivation(environment: environment) {
+                let wakeDeadline = Date().addingTimeInterval(2.5)
+                while Date() < wakeDeadline {
+                    Thread.sleep(forTimeInterval: 0.15)
+                    if let status = EdgeStatusClient.fetchStatus(config: config, timeout: 0.5) { return status }
+                }
+            }
             if EdgeLaunchAgent.activate(configDirectory: configDirectory, environment: environment) {
                 let agentDeadline = Date().addingTimeInterval(1.5)
                 while Date() < agentDeadline {

@@ -114,6 +114,22 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
         }
     }
 
+    /// One loopback listener Edge opened, as reported at start. Added after
+    /// protocol 1 shipped; decoding tolerates its absence in older binaries.
+    public struct Listener: Codable, Equatable, Sendable {
+        public var port: Int
+        /// Entry this port is pinned to; nil for the primary listener.
+        public var entryID: String?
+        /// True when launchd provided the socket (socket activation).
+        public var activated: Bool
+
+        public init(port: Int, entryID: String? = nil, activated: Bool = false) {
+            self.port = port
+            self.entryID = entryID
+            self.activated = activated
+        }
+    }
+
     public var ok: Bool
     public var protocolVersion: Int
     public var pid: Int32
@@ -127,6 +143,7 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
     public var lastErrors: [String]
     public var counters: Counters
     public var tunnels: [Tunnel]
+    public var listeners: [Listener]
     public var launchedAt: Double
 
     public init(
@@ -141,6 +158,7 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
         lastErrors: [String] = [],
         counters: Counters = Counters(),
         tunnels: [Tunnel] = [],
+        listeners: [Listener] = [],
         launchedAt: Double
     ) {
         self.ok = ok
@@ -154,7 +172,28 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
         self.lastErrors = lastErrors
         self.counters = counters
         self.tunnels = tunnels
+        self.listeners = listeners
         self.launchedAt = launchedAt
+    }
+
+    /// Tolerant of keys added after protocol 1 shipped (`listeners`, and the
+    /// counter set) so the launcher and the app can read status from older
+    /// Edge binaries.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        pid = try container.decode(Int32.self, forKey: .pid)
+        port = try container.decode(Int.self, forKey: .port)
+        mode = try container.decode(ProxyMode.self, forKey: .mode)
+        upstream = try container.decodeIfPresent(Upstream.self, forKey: .upstream)
+        pendingReason = try container.decodeIfPresent(String.self, forKey: .pendingReason)
+        throttleRetryAt = try container.decodeIfPresent(Double.self, forKey: .throttleRetryAt)
+        lastErrors = try container.decodeIfPresent([String].self, forKey: .lastErrors) ?? []
+        counters = try container.decodeIfPresent(Counters.self, forKey: .counters) ?? Counters()
+        tunnels = try container.decodeIfPresent([Tunnel].self, forKey: .tunnels) ?? []
+        listeners = try container.decodeIfPresent([Listener].self, forKey: .listeners) ?? []
+        launchedAt = try container.decode(Double.self, forKey: .launchedAt)
     }
 }
 

@@ -6,9 +6,10 @@
 # no real OpenCode CLI, no provider accounts, no network. Covers the P1
 # acceptance paths: cold launch, warm/sticky launch, rotation without a
 # process restart, script-edit invalidation, the token gate, fail-closed
-# behaviour, the spawn race, crash respawn, job control, plus the P2
-# stability paths: mid-stream-death and zero-byte-stall strikes, and
-# Retry-After on throttled 502s.
+# behaviour, the spawn race, crash respawn, job control; the P2 paths:
+# agent kickstart/bootout, mid-stream-death and zero-byte-stall strikes,
+# Retry-After on throttled 502s; and the P3 paths: a launchd-activated
+# listener served from an inherited descriptor, and a pinned listener.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -533,7 +534,75 @@ echo "  off-check body: $(head -c 300 "$WORK/off-check.json" | tr -d '\n')"
 check "off-mode checks still run and return results" grep -q '"px_sandbox"' "$WORK/off-check.json"
 check "the off-mode check produced a per-entry outcome" grep -Eq '"ok":(true|false)' "$WORK/off-check.json"
 
-echo "== scenario 20: the installer wires and unwires the launchd agent =="
+echo "== scenario 20: socket activation serves an inherited listener =="
+edge_stop
+write_store auto "$CACHING_SCRIPT"
+cat > "$WORK/activate-edge.py" <<'PYEOF'
+import os
+import socket
+import sys
+
+port = int(sys.argv[1])
+edge = sys.argv[2]
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", port))
+listener.listen(64)
+os.set_inheritable(listener.fileno(), True)
+os.environ["RELAYDOCK_EDGE_ACTIVATE_FD"] = str(listener.fileno())
+os.execv(edge, [edge, "run"])
+PYEOF
+python3 "$WORK/activate-edge.py" "$EDGE_PORT" "$EDGE" > "$WORK/activated-edge.log" 2>&1 &
+for _ in $(seq 1 40); do
+  status_json > /dev/null 2>&1 && break
+  sleep 0.25
+done
+status_json > "$WORK/status-activated.json"
+check "an Edge started with an inherited listener reports status" grep -q '"ok":true' "$WORK/status-activated.json"
+check "status marks the inherited listener as activated" python3 -c '
+import json, sys
+listeners = json.load(open(sys.argv[1]))["listeners"]
+assert any(entry["activated"] and entry["port"] == int(sys.argv[2]) for entry in listeners), listeners
+' "$WORK/status-activated.json" "$EDGE_PORT"
+check "the boot log names the activation path" grep -q "socket activation" "$CONFIG/edge.log"
+run_launcher activated-traffic
+check "the stub ran through the activated Edge" grep -q "^activated-traffic$" "$RECORD.args"
+check "the stub reached a proxy through the inherited listener" grep -q "^200$" "$RECORD.proxy"
+edge_stop
+check "the activated Edge exits on stop" test -z "$(edge_pid)"
+
+echo "== scenario 21: a pinned listener serves exactly one account =="
+write_store auto "$CACHING_SCRIPT"
+cp "$CONFIG/edge.json" "$WORK/edge.json.plain"
+PIN_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+python3 - "$CONFIG/edge.json" "$PIN_PORT" <<'PYEOF'
+import json
+import sys
+
+path, pin = sys.argv[1], int(sys.argv[2])
+with open(path) as handle:
+    config = json.load(handle)
+config["listeners"] = [{"port": pin, "entryID": "px_sandbox"}]
+with open(path, "w") as handle:
+    json.dump(config, handle)
+PYEOF
+run_launcher pinned-spawn
+check "the primary port routes after a pinned spawn" grep -q "^200$" "$RECORD.proxy"
+status_json > "$WORK/status-pinned.json"
+check "status reports both listeners with the pin" python3 -c '
+import json, sys
+listeners = {entry["port"]: entry for entry in json.load(open(sys.argv[1]))["listeners"]}
+assert int(sys.argv[2]) in listeners, listeners
+assert listeners.get(int(sys.argv[3]), {}).get("entryID") == "px_sandbox", listeners
+' "$WORK/status-pinned.json" "$EDGE_PORT" "$PIN_PORT"
+: > "$PROXY_LOG_A"
+: > "$PROXY_LOG_B"
+PIN_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -x "http://$EDGE_TOKEN:@127.0.0.1:$PIN_PORT" http://relaydock.test/health || true)"
+check "a request through the pinned port reaches the fake proxy" test "$PIN_CODE" = "200"
+check "the pinned request was routed via the pool upstream" bash -c "grep -q 'relaydock.test' '$PROXY_LOG_A' || grep -q 'relaydock.test' '$PROXY_LOG_B'"
+cp "$WORK/edge.json.plain" "$CONFIG/edge.json"
+
+echo "== scenario 22: the installer wires and unwires the launchd agent =="
 INSTALL_HOME="$WORK/install-home"
 mkdir -p "$INSTALL_HOME"
 rm -f "$LAUNCHCTL_RECORD" "$LAUNCHCTL_COUNT" "$WORK/install-out" "$WORK/uninstall-out"

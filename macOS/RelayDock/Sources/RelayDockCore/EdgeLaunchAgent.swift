@@ -40,6 +40,21 @@ public enum EdgeLaunchAgent {
         FileManager.default.fileExists(atPath: plistURL(environment: environment).path)
     }
 
+    /// True when the installed plist declares launchd `Sockets` (P3 socket
+    /// activation): launchd holds the loopback listener and starts Edge on
+    /// the first connection, so a failing ping is a wake signal rather than
+    /// evidence of a dead process.
+    public static func usesSocketActivation(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let url = plistURL(environment: environment)
+        guard let data = try? Data(contentsOf: url),
+              let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil))
+                  as? [String: Any],
+              let sockets = plist["Sockets"] as? [String: Any] else { return false }
+        return !sockets.isEmpty
+    }
+
     /// The config directory the installed plist manages: its baked
     /// `RELAYDOCK_CONFIG_DIR`, or the default app-support directory for the
     /// environment's `HOME` when the plist bakes no override.

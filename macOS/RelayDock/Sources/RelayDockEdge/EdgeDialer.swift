@@ -143,7 +143,12 @@ enum EdgeDialer {
         return EdgeUpstreamTunnel(socket: socket, initialData: Data())
     }
 
-    static func openTunnel(through upstreamURL: String, toHost host: String, port: UInt16) async throws -> EdgeUpstreamTunnel {
+    static func openTunnel(
+        through upstreamURL: String,
+        toHost host: String,
+        port: UInt16,
+        reusing warm: EdgeSocket? = nil
+    ) async throws -> EdgeUpstreamTunnel {
         guard let components = URLComponents(string: upstreamURL),
               let scheme = components.scheme?.lowercased(),
               let proxyHost = components.host, !proxyHost.isEmpty,
@@ -156,17 +161,17 @@ enum EdgeDialer {
         case "http", "https":
             return try await httpConnect(
                 proxyHost: proxyHost, proxyPort: proxyPort, tls: scheme == "https",
-                credentials: credentials, host: host, port: port
+                credentials: credentials, host: host, port: port, reusing: warm
             )
         case "socks5", "socks5h":
             return try await socks5Connect(
                 proxyHost: proxyHost, proxyPort: proxyPort, remoteDNS: scheme == "socks5h",
-                credentials: credentials, host: host, port: port
+                credentials: credentials, host: host, port: port, reusing: warm
             )
         case "socks4", "socks4a":
             return try await socks4Connect(
                 proxyHost: proxyHost, proxyPort: proxyPort, remoteDNS: scheme == "socks4a",
-                credentials: credentials, host: host, port: port
+                credentials: credentials, host: host, port: port, reusing: warm
             )
         default:
             throw EdgeSocketError.unsupported("Unsupported upstream scheme \(scheme).")
@@ -175,7 +180,7 @@ enum EdgeDialer {
 
     /// Opens a raw connection to the upstream proxy itself (for absolute-form
     /// forwarding): no CONNECT, no handshake yet.
-    static func openProxySocket(through upstreamURL: String) async throws -> EdgeProxyHop {
+    static func openProxySocket(through upstreamURL: String, reusing warm: EdgeSocket? = nil) async throws -> EdgeProxyHop {
         guard let components = URLComponents(string: upstreamURL),
               let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let proxyHost = components.host, !proxyHost.isEmpty,
@@ -183,7 +188,7 @@ enum EdgeDialer {
               let proxyPort = UInt16(exactly: rawPort) else {
             throw EdgeSocketError.unsupported("Unsupported upstream URL.")
         }
-        let socket = EdgeSocket(
+        let socket = warm ?? EdgeSocket(
             host: proxyHost, port: proxyPort, tls: scheme == "https",
             serverName: scheme == "https" ? proxyHost : nil
         )
@@ -210,9 +215,10 @@ enum EdgeDialer {
         tls: Bool,
         credentials: EdgeProxyCredentials?,
         host: String,
-        port: UInt16
+        port: UInt16,
+        reusing warm: EdgeSocket? = nil
     ) async throws -> EdgeUpstreamTunnel {
-        let socket = EdgeSocket(host: proxyHost, port: proxyPort, tls: tls, serverName: tls ? proxyHost : nil)
+        let socket = warm ?? EdgeSocket(host: proxyHost, port: proxyPort, tls: tls, serverName: tls ? proxyHost : nil)
         try await socket.awaitReady(timeout: 8)
         let authority = EdgeSocks.formatAuthority(host, port: port)
         var request = "CONNECT \(authority) HTTP/1.1\r\nHost: \(authority)\r\n"
@@ -236,9 +242,10 @@ enum EdgeDialer {
         remoteDNS: Bool,
         credentials: EdgeProxyCredentials?,
         host: String,
-        port: UInt16
+        port: UInt16,
+        reusing warm: EdgeSocket? = nil
     ) async throws -> EdgeUpstreamTunnel {
-        let socket = EdgeSocket(host: proxyHost, port: proxyPort)
+        let socket = warm ?? EdgeSocket(host: proxyHost, port: proxyPort)
         try await socket.awaitReady(timeout: 8)
         try await socket.send(EdgeSocks.socks5Greeting(hasCredentials: credentials != nil))
         let choice = try await socket.receiveExactly(2)
@@ -287,9 +294,10 @@ enum EdgeDialer {
         remoteDNS: Bool,
         credentials: EdgeProxyCredentials?,
         host: String,
-        port: UInt16
+        port: UInt16,
+        reusing warm: EdgeSocket? = nil
     ) async throws -> EdgeUpstreamTunnel {
-        let socket = EdgeSocket(host: proxyHost, port: proxyPort)
+        let socket = warm ?? EdgeSocket(host: proxyHost, port: proxyPort)
         try await socket.awaitReady(timeout: 8)
         guard let request = EdgeSocks.socks4Connect(host: host, port: port, userID: credentials?.user ?? "", remoteDNS: remoteDNS) else {
             throw EdgeSocketError.handshakeFailed("SOCKS4: cannot resolve \(host) locally.")

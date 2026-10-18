@@ -77,14 +77,27 @@ func withEdgeTimeout<T: Sendable>(
 /// `@unchecked Sendable` conformance states what that lifecycle already
 /// guarantees.
 final class EdgeSocket: @unchecked Sendable {
-    private let connection: NWConnection
-    private let queue: DispatchQueue
+    /// Either a Network.framework connection (dialed, or accepted by our own
+    /// NWListener) or a connected POSIX descriptor (inherited from launchd
+    /// socket activation, or accepted by `EdgeFDAcceptor`).
+    private enum Backend {
+        case network(NWConnection, DispatchQueue)
+        case descriptor(RawDescriptor)
+    }
+
+    private let backend: Backend
     private let lock = NSLock()
     private var started = false
 
     init(connection: NWConnection, label: String = "relaydock.edge.socket") {
-        self.connection = connection
-        self.queue = DispatchQueue(label: label)
+        self.backend = .network(connection, DispatchQueue(label: label))
+    }
+
+    /// Wraps a connected descriptor. The descriptor is owned by this socket
+    /// (cancelling shuts it down; deinit closes it exactly once).
+    init(fd: Int32, peerPort: UInt16? = nil, label: String = "relaydock.edge.socket") {
+        _ = label
+        self.backend = .descriptor(RawDescriptor(fd: fd, peerPort: peerPort))
     }
 
     convenience init(host: String, port: UInt16, tls: Bool = false, serverName: String? = nil) {
@@ -110,11 +123,27 @@ final class EdgeSocket: @unchecked Sendable {
     /// The peer's port for accepted connections — a client's ephemeral port,
     /// used for status attribution.
     var remotePort: UInt16? {
-        if case .hostPort(_, let port) = connection.endpoint { return port.rawValue }
-        return nil
+        switch backend {
+        case .network(let connection, _):
+            if case .hostPort(_, let port) = connection.endpoint { return port.rawValue }
+            return nil
+        case .descriptor(let raw):
+            return raw.peerPort
+        }
+    }
+
+    /// True while a pooled socket is still connected and has not failed —
+    /// the warm-hop pool checks this before handing it out. Descriptor-backed
+    /// sockets are connected by definition.
+    var isReadyForReuse: Bool {
+        switch backend {
+        case .descriptor: return true
+        case .network(let connection, _): return connection.state == .ready
+        }
     }
 
     func startIfNeeded() {
+        guard case .network(let connection, let queue) = backend else { return }
         lock.lock()
         if started {
             lock.unlock()
@@ -126,7 +155,10 @@ final class EdgeSocket: @unchecked Sendable {
     }
 
     func cancel() {
-        connection.cancel()
+        switch backend {
+        case .network(let connection, _): connection.cancel()
+        case .descriptor(let raw): raw.shutdown()
+        }
     }
 
     static func describe(_ error: Error) -> String {
@@ -140,6 +172,17 @@ final class EdgeSocket: @unchecked Sendable {
     }
 
     func awaitReady(timeout: TimeInterval = 8) async throws {
+        let connection: NWConnection
+        switch backend {
+        case .descriptor:
+            // An inherited or accepted descriptor is connected by definition.
+            return
+        case .network(let nw, _):
+            // A socket that already reached `.ready` (for example a pooled
+            // pre-dialed hop) never fires another state update.
+            if nw.state == .ready { return }
+            connection = nw
+        }
         let latch = EdgeLatch<Void>()
         connection.stateUpdateHandler = { state in
             switch state {
@@ -161,14 +204,40 @@ final class EdgeSocket: @unchecked Sendable {
     // MARK: - Receive / send
 
     private func receiveRange(minimum: Int, maximum: Int) async throws -> (data: Data, isComplete: Bool) {
-        startIfNeeded()
-        return try await withCheckedThrowingContinuation { continuation in
-            connection.receive(minimumIncompleteLength: minimum, maximumLength: maximum) { data, _, isComplete, error in
-                if let error {
-                    continuation.resume(throwing: EdgeSocketError.connectFailed(Self.describe(error)))
-                    return
+        switch backend {
+        case .network(let connection, _):
+            startIfNeeded()
+            return try await withCheckedThrowingContinuation { continuation in
+                connection.receive(minimumIncompleteLength: minimum, maximumLength: maximum) { data, _, isComplete, error in
+                    if let error {
+                        continuation.resume(throwing: EdgeSocketError.connectFailed(Self.describe(error)))
+                        return
+                    }
+                    continuation.resume(returning: (data ?? Data(), isComplete))
                 }
-                continuation.resume(returning: (data ?? Data(), isComplete))
+            }
+        case .descriptor(let raw):
+            // Blocking `recv` off the caller's thread. The descriptor backend
+            // returns whatever has arrived; the callers already loop on
+            // `isComplete`, so `minimum` only informs their framing.
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var buffer = [UInt8](repeating: 0, count: max(maximum, 1))
+                    while true {
+                        let count = Darwin.recv(raw.fd, &buffer, buffer.count, 0)
+                        if count > 0 {
+                            continuation.resume(returning: (Data(buffer.prefix(count)), false))
+                            return
+                        }
+                        if count == 0 {
+                            continuation.resume(returning: (Data(), true))
+                            return
+                        }
+                        if errno == EINTR { continue }
+                        continuation.resume(throwing: EdgeSocketError.connectFailed("POSIX \(errno)"))
+                        return
+                    }
+                }
             }
         }
     }
@@ -213,15 +282,74 @@ final class EdgeSocket: @unchecked Sendable {
     }
 
     func send(_ data: Data) async throws {
-        startIfNeeded()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: EdgeSocketError.connectFailed(Self.describe(error)))
-                } else {
-                    continuation.resume()
+        switch backend {
+        case .network(let connection, _):
+            startIfNeeded()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: EdgeSocketError.connectFailed(Self.describe(error)))
+                    } else {
+                        continuation.resume()
+                    }
+                })
+            }
+        case .descriptor(let raw):
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard !data.isEmpty else {
+                        continuation.resume()
+                        return
+                    }
+                    let failure: Int32? = data.withUnsafeBytes { rawBuffer in
+                        guard let base = rawBuffer.baseAddress else { return nil }
+                        var offset = 0
+                        while offset < rawBuffer.count {
+                            let sent = Darwin.send(raw.fd, base + offset, rawBuffer.count - offset, 0)
+                            if sent > 0 {
+                                offset += sent
+                                continue
+                            }
+                            if sent < 0, errno == EINTR { continue }
+                            return errno
+                        }
+                        return nil
+                    }
+                    if let failure {
+                        continuation.resume(throwing: EdgeSocketError.connectFailed("POSIX \(failure)"))
+                    } else {
+                        continuation.resume()
+                    }
                 }
-            })
+            }
         }
     }
+}
+
+/// Owns a connected POSIX descriptor. `shutdown` wakes blocked reads and
+/// writes without closing the descriptor; the close happens exactly once, in
+/// deinit. Operations capture this object, so it cannot deinit — and therefore
+/// cannot close — while a read or write is still in flight.
+final class RawDescriptor: @unchecked Sendable {
+    let fd: Int32
+    let peerPort: UInt16?
+    private let lock = NSLock()
+    private var shutDown = false
+
+    init(fd: Int32, peerPort: UInt16?) {
+        self.fd = fd
+        self.peerPort = peerPort
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    func shutdown() {
+        lock.lock()
+        let first = !shutDown
+        shutDown = true
+        lock.unlock()
+        if first { Darwin.shutdown(fd, SHUT_RDWR) }
+    }
+
+    deinit { Darwin.close(fd) }
 }

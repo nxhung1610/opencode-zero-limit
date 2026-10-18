@@ -18,22 +18,48 @@ public struct EdgeConfigFile: Codable, Equatable, Sendable {
     public static let currentVersion = 1
     public static let defaultPort = 57211
 
+    /// One extra loopback listener pinned to a single pool entry (P3
+    /// per-account ports). Consumers that dial this port always route through
+    /// that account; the global mode and the rest of the pool never apply.
+    public struct Listener: Codable, Equatable, Sendable {
+        public var port: Int
+        public var entryID: String
+
+        public init(port: Int, entryID: String) {
+            self.port = port
+            self.entryID = entryID
+        }
+    }
+
     public var version: Int
     public var port: Int
     public var token: String
+    public var listeners: [Listener]
 
     public init(
         version: Int = EdgeConfigFile.currentVersion,
         port: Int = EdgeConfigFile.defaultPort,
-        token: String
+        token: String,
+        listeners: [Listener] = []
     ) {
         self.version = version
         self.port = port
         self.token = token
+        self.listeners = listeners
+    }
+
+    /// Older `edge.json` files have no `listeners` key; decoding tolerates
+    /// its absence so upgrades never strand a working install.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        port = try container.decode(Int.self, forKey: .port)
+        token = try container.decode(String.self, forKey: .token)
+        listeners = try container.decodeIfPresent([Listener].self, forKey: .listeners) ?? []
     }
 
     /// `http://<token>:@127.0.0.1:<port>` — the constant value of every proxy
-    /// var (the trailing colon keeps Bun's proxy parser happy, see above)iable a wrapped process holds.
+    /// var (the trailing colon keeps Bun's proxy parser happy, see above) — the constant value a wrapped process holds.
     public var proxyURL: String {
         Self.proxyURL(token: token, port: port)
     }
@@ -73,10 +99,21 @@ public struct EdgeConfigFile: Codable, Equatable, Sendable {
     /// of guessing a port or token.
     public static func load(from url: URL) -> EdgeConfigFile? {
         guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(EdgeConfigFile.self, from: data),
-              config.version == currentVersion,
-              (1...65_535).contains(config.port),
-              !config.token.isEmpty else { return nil }
+              let decoded = try? JSONDecoder().decode(EdgeConfigFile.self, from: data),
+              decoded.version == currentVersion,
+              (1...65_535).contains(decoded.port),
+              !decoded.token.isEmpty else { return nil }
+        // Listener entries are best-effort hardening: one bad pin must never
+        // take the primary listener down with it, so invalid entries are
+        // dropped instead of failing the whole file.
+        var config = decoded
+        var seenPinnedPorts: Set<Int> = []
+        config.listeners = config.listeners.filter { listener in
+            (1...65_535).contains(listener.port)
+                && listener.port != config.port
+                && !listener.entryID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && seenPinnedPorts.insert(listener.port).inserted
+        }
         return config
     }
 
