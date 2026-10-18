@@ -53,16 +53,16 @@ struct RoutingView: View {
     /// Prominent statement of where routing stands: mode, pool numbers, and
     /// the consequence that matters — fail closed, never direct fallback.
     private func routingState(_ state: ProxyState) -> some View {
-        let consequence = stateConsequence(state)
+        let consequence = RoutingStatePresentation.consequence(for: state)
         return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: stateSymbol(state))
+            Image(systemName: RoutingStatePresentation.symbol(for: state))
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(stateTint(state))
+                .foregroundStyle(RoutingStatePresentation.tint(for: state))
                 .frame(width: 28, height: 28)
                 .offset(y: -5)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(stateHeadline(state))
+                Text(RoutingStatePresentation.headline(for: state))
                     .font(.title3.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 Text(consequence.text)
@@ -72,63 +72,6 @@ struct RoutingView: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    private func stateSymbol(_ state: ProxyState) -> String {
-        switch state.mode {
-        case .off: return "arrow.right.circle"
-        case .manual: return "hand.point.up.left"
-        case .auto: return "wand.and.stars"
-        }
-    }
-
-    private func stateTint(_ state: ProxyState) -> Color {
-        switch state.mode {
-        case .off:
-            return .secondary
-        case .manual:
-            return validManual(state) != nil ? .accentColor : .orange
-        case .auto:
-            return state.autoEligibleProxies.isEmpty ? .orange : .green
-        }
-    }
-
-    private func stateHeadline(_ state: ProxyState) -> String {
-        switch state.mode {
-        case .off:
-            return "Direct — no proxy"
-        case .manual:
-            guard let proxy = validManual(state) else { return "Manual" }
-            return "Manual · \(proxy.label)"
-        case .auto:
-            return "Auto · \(state.autoEligibleProxies.count) eligible · \(state.enabledProxies.count) enabled"
-        }
-    }
-
-    private func stateConsequence(_ state: ProxyState) -> (text: String, isWarning: Bool) {
-        switch state.mode {
-        case .off:
-            return ("Off saves an explicit direct-routing policy. This app does not apply it to OpenCode.", false)
-        case .manual:
-            guard validManual(state) != nil else {
-                return ("Manual selection missing or invalid. Routing fails closed; no direct fallback.", true)
-            }
-            return ("If this proxy fails, routing fails closed — no direct fallback.", false)
-        case .auto:
-            if state.enabledProxies.isEmpty {
-                return ("Enable a proxy before a consumer can use Auto mode.", true)
-            } else if state.validEnabledProxies.isEmpty {
-                return ("No enabled proxy has a valid supported URL.", true)
-            } else if state.autoEligibleProxies.isEmpty {
-                return ("All enabled proxies have a failed last check. Auto will fail closed.", true)
-            }
-            return ("Unchecked proxies may be eligible.", false)
-        }
-    }
-
-    private func validManual(_ state: ProxyState) -> ProxyEntry? {
-        guard let id = state.manualId else { return nil }
-        return state.validEnabledProxies.first(where: { $0.id == id })
     }
 
     // MARK: - Manual

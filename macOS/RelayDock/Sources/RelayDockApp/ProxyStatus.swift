@@ -28,4 +28,31 @@ enum ProxyStatus {
         if let latency = health.latencyMs { return "Passed · \(Int(latency.rounded())) ms" }
         return "Passed"
     }
+
+    /// Compact age of the last check ("2m ago", "1h ago"), or `nil` when
+    /// there is no millisecond timestamp to read. Checks are stored in
+    /// milliseconds; a legacy seconds value reads as unknown, not as a wrong
+    /// date.
+    static func checkedAgo(for proxy: ProxyEntry, now: Date = Date()) -> String? {
+        guard let health = proxy.health,
+              health.checkedAt > 1_000_000_000_000 else { return nil }
+        let seconds = now.timeIntervalSince1970 - health.checkedAt / 1_000
+        if seconds < 60 { return "just now" }
+        if seconds < 3_600 { return "\(Int(seconds / 60))m ago" }
+        if seconds < 86_400 { return "\(Int(seconds / 3_600))h ago" }
+        return "\(Int(seconds / 86_400))d ago"
+    }
+
+    /// Full row detail for tooltips and VoiceOver: outcome, error, and age.
+    static func detail(for proxy: ProxyEntry, now: Date = Date()) -> String {
+        guard proxy.enabled else { return "Disabled" }
+        guard let health = proxy.health else { return "Not tested yet" }
+        let age = checkedAgo(for: proxy, now: now).map { " · \($0)" } ?? ""
+        if health.ok {
+            let latency = health.latencyMs.map { " · \(Int($0.rounded())) ms" } ?? ""
+            return "Passed\(latency)\(age)"
+        }
+        let error = health.error.map { " · \($0)" } ?? ""
+        return "Failed\(error)\(age)"
+    }
 }

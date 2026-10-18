@@ -1,6 +1,6 @@
 # RelayDock proxy app — wireframe variants
 
-**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, and menu bar Edge line (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
+**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, a menu bar Edge line, and a shared routing-state presentation for the Routing tab and panel anchor (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
 
 ## Reference
 
@@ -151,5 +151,12 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 
 - **Routing tab — RelayDock Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar popover is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
 - **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers; deferred results are reported, not recorded. When Edge is unreachable the check falls back in-process and the pool header says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
-- **Menu bar — Edge line:** `Edge · <mode> · <upstream label | Direct | No upstream> · <active tunnels>` beneath the status line; `Edge · not running` when the daemon does not answer. Hidden entirely when Edge is not configured.
+- **Menu bar — Edge line:** `Edge running · <upstream label | Direct | No upstream> · <N active>`, showing Edge's own mode only when it diverges from the saved one; `Edge not running` when the daemon does not answer (tooltip: starts on demand at the next wrapped launch). Hidden entirely when Edge is not configured.
 - **Honesty line (window footer + menu bar):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."
+
+## Implemented refinements (menu bar panel)
+
+- **State anchor:** the panel leads with the same symbol, tint, headline, and consequence line as the Routing tab, from one shared source (`RoutingStatePresentation`) — a warning reads identically on both surfaces. Calm captions earn their line only when they inform: Manual's fail-closed promise, and Auto's "Unchecked proxies may be eligible." while an enabled proxy is unchecked.
+- **Header:** no longer repeats the saved mode; the anchor and the segmented control already say it.
+- **Row freshness:** rows append a compact check age (`· 2m ago`, `1h ago`, `2d ago`) when the health timestamp is in the stored millisecond format; legacy seconds timestamps and in-progress test runs show none. Row tooltips and VoiceOver labels carry outcome, error, and age (`ProxyStatus.detail`).
+- **Chrome:** "Test All" gains a refresh glyph, the error banner's Dismiss is a link, the honesty line gains an info glyph, and section padding uses the 12-point rhythm.
