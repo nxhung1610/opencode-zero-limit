@@ -11,14 +11,24 @@ final class EdgeClientConnection: @unchecked Sendable {
     private let config: EdgeConfigFile
     private let log: EdgeLog
     private let clientPort: UInt16?
+    /// Non-nil when this connection arrived on a listener pinned to one
+    /// entry (per-account ports).
+    private let pinnedEntryID: String?
 
-    init(connection: NWConnection, daemon: EdgeDaemon, config: EdgeConfigFile, log: EdgeLog) {
-        let socket = EdgeSocket(connection: connection, label: "relaydock.edge.client")
+    init(
+        socket: EdgeSocket,
+        peerPort: UInt16?,
+        daemon: EdgeDaemon,
+        config: EdgeConfigFile,
+        log: EdgeLog,
+        pinnedEntryID: String? = nil
+    ) {
         self.socket = socket
         self.daemon = daemon
         self.config = config
         self.log = log
-        self.clientPort = socket.remotePort
+        self.clientPort = peerPort
+        self.pinnedEntryID = pinnedEntryID
     }
 
     func start() {
@@ -112,7 +122,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             return
         }
 
-        let decision = await daemon.decideRoute()
+        let decision = await daemon.decideRoute(pinning: pinnedEntryID)
         switch decision {
         case .direct:
             do {
@@ -126,10 +136,14 @@ final class EdgeClientConnection: @unchecked Sendable {
                 )
             }
         case .upstream(let first):
-            let dialed = await withDialRetry(first) { upstream in
-                try await EdgeDialer.openTunnel(through: upstream.url, toHost: host, port: port)
+            let warm = await daemon.takeWarmProxySocket(for: first.url)
+            let dialed = await withDialRetry(first, pinnedEntryID: pinnedEntryID, warmSocket: warm) { upstream, reusing in
+                try await EdgeDialer.openTunnel(
+                    through: upstream.url, toHost: host, port: port, reusing: reusing
+                )
             }
             if let dialed {
+                await daemon.warmProxySocket(for: dialed.upstream.url)
                 try await sendConnectEstablished()
                 try await relay(
                     to: dialed.tunnel,
@@ -138,7 +152,7 @@ final class EdgeClientConnection: @unchecked Sendable {
                     label: dialed.upstream.label
                 )
             } else {
-                let reason = await daemon.refusalReason() ?? "no usable upstream resolved"
+                let reason = await daemon.refusalReason(pinning: pinnedEntryID) ?? "no usable upstream resolved"
                 let retryAfter = await daemon.refusalRetryAfter()
                 try await sendSimple(
                     status: 502, reason: "Bad Gateway",
@@ -173,7 +187,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             return
         }
 
-        let decision = await daemon.decideRoute()
+        let decision = await daemon.decideRoute(pinning: pinnedEntryID)
         switch decision {
         case .direct:
             do {
@@ -189,12 +203,25 @@ final class EdgeClientConnection: @unchecked Sendable {
                 )
             }
         case .upstream(let first):
-            let dialed = await withDialRetry(first) { upstream in
+            // Only SOCKS tunnels may reuse a warm socket on the forward path:
+            // they handshake first, so a stale pooled socket surfaces as a
+            // dial failure the retry contract can act on. A plain http/https
+            // hop has no handshake — a stale reuse would break mid-request.
+            let warm: EdgeSocket?
+            switch EdgeDialer.scheme(of: first.url) {
+            case "socks5", "socks5h", "socks4", "socks4a":
+                warm = await daemon.takeWarmProxySocket(for: first.url)
+            default:
+                warm = nil
+            }
+            let dialed = await withDialRetry(first, pinnedEntryID: pinnedEntryID, warmSocket: warm) { upstream, reusing in
                 try await self.openForwardTunnel(
-                    through: upstream, request: request, host: host, port: port, clientPrelude: clientPrelude
+                    through: upstream, request: request, host: host, port: port,
+                    clientPrelude: clientPrelude, reusing: reusing
                 )
             }
             if let dialed {
+                await daemon.warmProxySocket(for: dialed.upstream.url)
                 try await relay(
                     to: dialed.tunnel,
                     clientPrelude: Data(),
@@ -203,7 +230,7 @@ final class EdgeClientConnection: @unchecked Sendable {
                     requestSent: true
                 )
             } else {
-                let reason = await daemon.refusalReason() ?? "no usable upstream resolved"
+                let reason = await daemon.refusalReason(pinning: pinnedEntryID) ?? "no usable upstream resolved"
                 let retryAfter = await daemon.refusalRetryAfter()
                 try await sendSimple(
                     status: 502, reason: "Bad Gateway",
@@ -228,15 +255,19 @@ final class EdgeClientConnection: @unchecked Sendable {
         request: EdgeHTTPRequest,
         host: String,
         port: UInt16,
-        clientPrelude: Data
+        clientPrelude: Data,
+        reusing warm: EdgeSocket? = nil
     ) async throws -> EdgeUpstreamTunnel {
         switch EdgeDialer.scheme(of: upstream.url) {
         case "socks5", "socks5h", "socks4", "socks4a":
-            let tunnel = try await EdgeDialer.openTunnel(through: upstream.url, toHost: host, port: port)
+            let tunnel = try await EdgeDialer.openTunnel(through: upstream.url, toHost: host, port: port, reusing: warm)
             try await tunnel.socket.send(request.originForwardHead(upstreamAuthorization: nil))
             if !clientPrelude.isEmpty { try await tunnel.socket.send(clientPrelude) }
             return tunnel
         default:
+            // No handshake on a plain proxy hop: a pooled socket could only
+            // fail mid-request, so http/https forwards always dial cold.
+            warm?.cancel()
             let hop = try await EdgeDialer.openProxySocket(through: upstream.url)
             let authorization = hop.credentials.map { EdgeSocks.basicAuthorization($0) }
             try await hop.socket.send(request.absoluteForwardHead(upstreamAuthorization: authorization))
@@ -254,20 +285,44 @@ final class EdgeClientConnection: @unchecked Sendable {
 
     /// One internal retry on dial failure: single-flight resolve, then retry
     /// with the replacement upstream, the old one while strikes are low, or
-    /// give up. The client only ever sees the outcome.
+    /// give up. The client only ever sees the outcome. A pinned listener
+    /// retries within its own entry (the global policy is never consulted),
+    /// and a warm socket passed in is offered to the first attempt only —
+    /// a stale pooled socket can never be redeemed twice.
     private func withDialRetry(
         _ upstream: EdgeUpstream,
-        operation: (EdgeUpstream) async throws -> EdgeUpstreamTunnel
+        pinnedEntryID: String? = nil,
+        warmSocket: EdgeSocket? = nil,
+        operation: (EdgeUpstream, EdgeSocket?) async throws -> EdgeUpstreamTunnel
     ) async -> DialedTunnel? {
         do {
-            let tunnel = try await operation(upstream)
-            await daemon.noteUpstreamSuccess()
+            let tunnel = try await operation(upstream, warmSocket)
+            if let pinnedEntryID {
+                await daemon.notePinnedSuccess(entryID: pinnedEntryID)
+            } else {
+                await daemon.noteUpstreamSuccess()
+            }
             return DialedTunnel(tunnel: tunnel, upstream: upstream)
         } catch {
             log.warn("dial failed via \(upstream.label): \(error.localizedDescription)")
+            if let pinnedEntryID {
+                guard await daemon.notePinnedDialFailure(entryID: pinnedEntryID) else { return nil }
+                guard case .upstream(let replacement) = await daemon.decideRoute(pinning: pinnedEntryID) else {
+                    return nil
+                }
+                do {
+                    let tunnel = try await operation(replacement, nil)
+                    await daemon.notePinnedSuccess(entryID: pinnedEntryID)
+                    return DialedTunnel(tunnel: tunnel, upstream: replacement)
+                } catch {
+                    log.warn("pinned retry failed via \(replacement.label): \(error.localizedDescription)")
+                    _ = await daemon.notePinnedDialFailure(entryID: pinnedEntryID)
+                    return nil
+                }
+            }
             guard let replacement = await daemon.noteDialFailure(reResolve: true) else { return nil }
             do {
-                let tunnel = try await operation(replacement)
+                let tunnel = try await operation(replacement, nil)
                 await daemon.noteUpstreamSuccess()
                 return DialedTunnel(tunnel: tunnel, upstream: replacement)
             } catch {

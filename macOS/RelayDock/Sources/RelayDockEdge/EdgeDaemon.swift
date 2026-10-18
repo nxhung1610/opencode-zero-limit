@@ -114,11 +114,24 @@ actor EdgeDaemon {
     private var nextCheckAt: [String: Double] = [:]
     private var failureStreak: [String: Int] = [:]
     private var schedulerTask: Task<Void, Never>?
+    private var pinnedUpstreams: [String: EdgeUpstream] = [:]
+    private var pinnedResolveTasks: [String: Task<EdgeUpstream?, Never>] = [:]
+    private var pinnedErrors: [String: String] = [:]
+    private var hopPool: [String: [(socket: EdgeSocket, createdAt: Double)]] = [:]
+    private let hopPoolLifetime: TimeInterval = 20
+    private let hopPoolDepth = 1
+    private let listenerReport: EdgeListenerReport?
 
-    init(config: EdgeConfigFile, directory: URL, log: EdgeLog) {
+    init(
+        config: EdgeConfigFile,
+        directory: URL,
+        log: EdgeLog,
+        listenerReport: EdgeListenerReport? = nil
+    ) {
         self.config = config
         self.directory = directory
         self.log = log
+        self.listenerReport = listenerReport
     }
 
     // MARK: - State file
@@ -250,7 +263,8 @@ actor EdgeDaemon {
 
     // MARK: - Routing
 
-    func decideRoute() async -> EdgeRouteDecision {
+    func decideRoute(pinning entryID: String? = nil) async -> EdgeRouteDecision {
+        if let entryID { return await pinnedRoute(for: entryID) }
         let now = Date().timeIntervalSince1970
         guard let state = loadState() else {
             return .refuse(reason: "proxies.json could not be read on this Mac", retryAt: nil)
@@ -269,7 +283,10 @@ actor EdgeDaemon {
         return .refuse(reason: pendingReason ?? Self.defaultRefusal(state), retryAt: nil)
     }
 
-    func refusalReason() -> String? { pendingReason }
+    func refusalReason(pinning entryID: String? = nil) -> String? {
+        if let entryID { return pinnedErrors[entryID] }
+        return pendingReason
+    }
 
     /// Seconds a refused client should wait before retrying, while the
     /// policy sits inside a timed provider cooldown. Nil when no timed wait
@@ -278,6 +295,121 @@ actor EdgeDaemon {
         let now = Date().timeIntervalSince1970
         guard let retryAt = throttleRetryAt, retryAt > now else { return nil }
         return retryAt - now
+    }
+
+    // MARK: - Pinned listeners (per-account ports)
+
+    /// Route decision for a listener pinned to one entry: the global mode
+    /// deliberately does not apply (a pinned port exists to serve exactly
+    /// this account), and nothing else in the pool is ever considered.
+    /// Failures refuse — never a different entry, never a direct dial.
+    private func pinnedRoute(for entryID: String) async -> EdgeRouteDecision {
+        let now = Date().timeIntervalSince1970
+        guard let state = loadState() else {
+            return .refuse(reason: "proxies.json could not be read on this Mac", retryAt: nil)
+        }
+        guard let entry = state.proxies.first(where: { $0.id == entryID }) else {
+            return .refuse(reason: "the pinned entry \(entryID) is no longer in the pool", retryAt: nil)
+        }
+        guard entry.enabled, entry.hasValidDefinition else {
+            return .refuse(
+                reason: "the pinned entry \"\(entry.label)\" is disabled or has no usable definition",
+                retryAt: nil
+            )
+        }
+        if let cached = pinnedUpstreams[entryID], cached.strikes < 3,
+           let refreshAt = cached.refreshAt, now < refreshAt {
+            return .upstream(cached)
+        }
+        if let resolved = await resolvePinned(entry: entry) { return .upstream(resolved) }
+        if let cached = pinnedUpstreams[entryID], cached.strikes < 3 { return .upstream(cached) }
+        return .refuse(
+            reason: pinnedErrors[entryID] ?? "the pinned entry could not resolve an upstream",
+            retryAt: nil
+        )
+    }
+
+    /// Single-flight resolve of one pinned entry through the standard route
+    /// machinery (a forced manual selection over a state that contains only
+    /// this entry), caching the result the way the pool-wide resolve does.
+    private func resolvePinned(entry: ProxyEntry) async -> EdgeUpstream? {
+        if let task = pinnedResolveTasks[entry.id] { return await task.value }
+        var placement = ProxyState.defaults
+        placement.mode = .manual
+        placement.manualId = entry.id
+        placement.proxies = [entry]
+        let log = self.log
+        let task = Task.detached(priority: .userInitiated) { () -> EdgeUpstream? in
+            Self.performPinnedResolve(placement: placement, entry: entry, log: log)
+        }
+        pinnedResolveTasks[entry.id] = task
+        let resolved = await task.value
+        pinnedResolveTasks[entry.id] = nil
+        if let resolved {
+            pinnedUpstreams[entry.id] = resolved
+            pinnedErrors[entry.id] = nil
+        } else if pinnedErrors[entry.id] == nil {
+            pinnedErrors[entry.id] = "the pinned entry \"\(entry.label)\" could not resolve an upstream"
+        }
+        return resolved
+    }
+
+    private static func performPinnedResolve(
+        placement: ProxyState,
+        entry: ProxyEntry,
+        log: EdgeLog
+    ) -> EdgeUpstream? {
+        do {
+            guard let route = try resolveSpawnRoute(state: placement, accountID: "pinned", bindings: [:]),
+                  route.entryID == entry.id else { return nil }
+            let now = Date().timeIntervalSince1970
+            let snapshot = exportProxyScriptCacheSnapshots()[entry.id]
+            var expiresAt: Double?
+            var refreshAt: Double?
+            if let expiry = snapshotExpiry(snapshot: snapshot, now: now) {
+                expiresAt = expiry
+                let lifetime = max(expiry - now, 1)
+                refreshAt = expiry - min(60, max(10, lifetime / 10))
+            }
+            let resolved = EdgeUpstream(
+                entryID: entry.id,
+                label: entry.label,
+                url: route.proxyURL,
+                source: entry.isCustomScript ? "script" : "static",
+                resolvedAt: now,
+                expiresAt: expiresAt,
+                refreshAt: refreshAt,
+                strikes: 0
+            )
+            let expiryNote = expiresAt.map { ", expires in \(Int($0 - now))s" } ?? ""
+            log.info("pinned listener resolved \(entry.label) (\(maskedProxyURL(route.proxyURL)))\(expiryNote)")
+            return resolved
+        } catch {
+            log.warn("pinned resolve failed for \(entry.label): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// A dial through a pinned upstream failed: count it, strike the cached
+    /// endpoint (its snapshot is dropped so the next resolve asks fresh), and
+    /// report whether the caller may retry once.
+    func notePinnedDialFailure(entryID: String) -> Bool {
+        dialFailures += 1
+        var strikes = 0
+        if var cached = pinnedUpstreams[entryID] {
+            cached.strikes += 1
+            strikes = cached.strikes
+            pinnedUpstreams[entryID] = cached
+            removeProxyScriptCacheSnapshot(for: entryID)
+        }
+        pushError("pinned listener dial failed: \(pinnedUpstreams[entryID]?.label ?? entryID)")
+        return strikes < 3
+    }
+
+    func notePinnedSuccess(entryID: String) {
+        guard var cached = pinnedUpstreams[entryID], cached.strikes > 0 else { return }
+        cached.strikes = 0
+        pinnedUpstreams[entryID] = cached
     }
 
     @discardableResult
@@ -384,6 +516,8 @@ actor EdgeDaemon {
             if let previous = upstream, previous.entryID != resolved.entryID {
                 switches += 1
                 log.info("switched upstream to \(resolved.label) (\(maskedProxyURL(resolved.url)))")
+                // Warm sockets belong to the old endpoint; drop them.
+                drainHopPool()
             }
             resolutions += 1
             upstream = adjusted
@@ -637,6 +771,78 @@ actor EdgeDaemon {
         return health.ok ? .ok(health) : .failed(health)
     }
 
+    // MARK: - Warm hop pool (upstream pre-dials)
+
+    /// Pops a pre-dialed socket to the upstream proxy, if one is warm. The
+    /// socket carries no application bytes, so a stale reuse can never leak
+    /// anything between clients — a failure here is handled exactly like a
+    /// failed cold dial by the caller's retry contract.
+    func takeWarmProxySocket(for upstreamURL: String) -> EdgeSocket? {
+        guard let key = EdgeHopPool.key(for: upstreamURL) else { return nil }
+        var entries = hopPool[key] ?? []
+        let now = Date().timeIntervalSince1970
+        var chosen: EdgeSocket?
+        while let candidate = entries.popLast() {
+            if now - candidate.createdAt <= hopPoolLifetime, candidate.socket.isReadyForReuse {
+                chosen = candidate.socket
+                break
+            }
+            candidate.socket.cancel()
+        }
+        hopPool[key] = entries.isEmpty ? nil : entries
+        return chosen
+    }
+
+    /// Starts warming one pooled socket for the current upstream, if the pool
+    /// is below depth. Fire-and-forget: failures are silent (the next dial
+    /// just pays the handshake). Seed only for the *current* upstream — a
+    /// stale entry from a previous endpoint is drained on switch, not served.
+    func warmProxySocket(for upstreamURL: String) {
+        guard let key = EdgeHopPool.key(for: upstreamURL) else { return }
+        let now = Date().timeIntervalSince1970
+        var entries = hopPool[key] ?? []
+        entries.removeAll { now - $0.createdAt > hopPoolLifetime }
+        guard entries.count < hopPoolDepth else {
+            hopPool[key] = entries
+            return
+        }
+        hopPool[key] = entries
+        guard let target = EdgeHopPool.dialTarget(for: upstreamURL) else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let socket = EdgeSocket(
+                host: target.host, port: target.port, tls: target.tls,
+                serverName: target.tls ? target.host : nil
+            )
+            do {
+                try await socket.awaitReady(timeout: 5)
+            } catch {
+                socket.cancel()
+                return
+            }
+            await self?.storeWarmSocket(socket, key: key)
+        }
+    }
+
+    private func storeWarmSocket(_ socket: EdgeSocket, key: String) {
+        let now = Date().timeIntervalSince1970
+        var entries = hopPool[key] ?? []
+        entries.removeAll { now - $0.createdAt > hopPoolLifetime }
+        guard entries.count < hopPoolDepth,
+              let current = upstream, EdgeHopPool.key(for: current.url) == key else {
+            socket.cancel()
+            return
+        }
+        entries.append((socket, now))
+        hopPool[key] = entries
+    }
+
+    private func drainHopPool() {
+        for entries in hopPool.values {
+            for entry in entries { entry.socket.cancel() }
+        }
+        hopPool = [:]
+    }
+
     // MARK: - Status
 
     func status() -> EdgeStatusResponse {
@@ -701,6 +907,9 @@ actor EdgeDaemon {
                 tunnelsActive: tunnelsActive.count
             ),
             tunnels: tunnels,
+            listeners: listenerReport?.snapshot().map {
+                EdgeStatusResponse.Listener(port: $0.port, entryID: $0.entryID, activated: $0.activated)
+            } ?? [],
             launchedAt: launchedAt
         )
     }
