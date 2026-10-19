@@ -32,9 +32,9 @@ enum AppActionRole {
 }
 
 extension View {
-    /// App-standard button treatment. `size` follows the surface: `.small` in
-    /// the menu bar panel, `.regular` inside forms and rows, `.large` for
-    /// window headers, sheets, and empty-state calls to action.
+    /// App-standard button treatment. `size` follows the surface: `.large` for
+    /// surface actions, headers, sheets, and calls to action; `.regular` inside
+    /// forms and rows; `.small` for inline links.
     @ViewBuilder
     func appAction(_ role: AppActionRole, size: ControlSize = .regular) -> some View {
         switch role {
