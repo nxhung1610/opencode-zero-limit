@@ -80,7 +80,7 @@ struct MenuBarPanelView: View {
                 Button("Try Again") {
                     model.reload()
                 }
-                .appAction(.secondary, size: .small)
+                .appAction(.secondary, size: .large)
             }
             .padding(AppLayout.panelGutter)
         } else {
@@ -114,7 +114,7 @@ struct MenuBarPanelView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .appAction(.secondary, size: .small)
+            .appAction(.secondary, size: .large)
             .disabled(model.isTesting || model.state?.enabledProxies.isEmpty != false)
 
             Button {
@@ -123,7 +123,7 @@ struct MenuBarPanelView: View {
                 Label("Open RelayDock…", systemImage: "macwindow")
                     .frame(maxWidth: .infinity)
             }
-            .appAction(.primary, size: .small)
+            .appAction(.primary, size: .large)
         }
         .padding(.horizontal, AppLayout.panelGutter)
         .padding(.vertical, 12)
@@ -237,7 +237,7 @@ struct MenuBarPanelView: View {
             Button("Add Proxies…") {
                 presentWindow(tab: .pool)
             }
-            .appAction(.secondary, size: .small)
+            .appAction(.secondary, size: .large)
         }
     }
 
