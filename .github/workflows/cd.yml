@@ -1,0 +1,59 @@
+name: RelayDock CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Edge daemon and launcher
+        run: scripts/build-launcher.sh
+      - name: Build macOS app bundle
+        run: scripts/build-macos-app.sh
+      - name: Package downloadables
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent build/RelayDock.app dist/RelayDock.app.zip
+          cp build/relaydock-edge dist/relaydock-edge
+          cp build/relaydock-launch dist/relaydock-launch
+          chmod +x dist/relaydock-edge dist/relaydock-launch
+          (cd dist && shasum -a 256 RelayDock.app.zip relaydock-edge relaydock-launch > SHA256SUMS)
+          ls -lh dist
+      - name: Upload the packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: relaydock-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: relaydock-${{ github.sha }}
+          path: dist
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
