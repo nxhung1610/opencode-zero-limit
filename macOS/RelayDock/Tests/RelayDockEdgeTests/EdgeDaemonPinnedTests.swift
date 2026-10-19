@@ -105,4 +105,30 @@ struct EdgeDaemonPinnedTests {
         }
         #expect(reason.contains("no longer in the pool"))
     }
+
+    /// A script resolved only through a pinned listener must survive an Edge
+    /// restart like any other resolution — otherwise the next Test All reads
+    /// the entry as "nothing resolved yet".
+    @Test func pinnedScriptResolutionIsPersistedForTheNextProcess() async throws {
+        let (directory, store, daemon) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = "cache.url = 'http://127.0.0.1:9'; return cache.url;"
+        let imported = try store.addProxyScript(name: "Pinned script", script: script)
+        let entry = imported.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+
+        guard case .upstream(let upstream) = await daemon.decideRoute(pinning: entry.id) else {
+            Issue.record("a pinned script entry must resolve through its script")
+            return
+        }
+        #expect(upstream.source == "script")
+
+        let file = ScriptCacheFile.load(from: directory.appending(path: ScriptCacheFile.fileName))
+        guard let persisted = file.entries[entry.id] else {
+            Issue.record("a pinned resolution must persist its snapshot")
+            return
+        }
+        #expect(persisted.scriptHash == ScriptCacheFile.scriptHash(script))
+        #expect(persisted.snapshot.contains("127.0.0.1:9"))
+    }
 }

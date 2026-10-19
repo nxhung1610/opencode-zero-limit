@@ -43,6 +43,54 @@ struct EdgeDaemonTests {
         #expect(EdgeDaemon.resolvedURL(entryID: "idle", upstream: nil, pinned: nil, cacheURL: nil) == nil)
     }
 
+    /// "Nothing resolved yet" must mean nothing, anywhere: a resolution Edge
+    /// persisted in an earlier process (or one the app wrote) still counts
+    /// after a restart — and Off mode, which never resolves a route, must
+    /// still probe it instead of skipping every script entry.
+    @Test func checkProbesAPersistedScriptResolutionWhenRoutingIsOff() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-check-cache-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let script = "return 'http://127.0.0.1:9';"
+        let imported = try store.addProxyScript(name: "Rotating", script: script)
+        let entry = imported.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.off, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+
+        // With no snapshot anywhere, the check is honestly deferred.
+        let before = await daemon.runChecks(scope: .all)
+        if case .deferred = before[entry.id] {} else {
+            Issue.record("with nothing persisted there is nothing to probe")
+        }
+
+        try ScriptCacheFile(entries: [
+            entry.id: .init(
+                scriptHash: ScriptCacheFile.scriptHash(script),
+                snapshot: #"{"url":"http://127.0.0.1:9"}"#
+            ),
+        ]).save(to: directory.appending(path: ScriptCacheFile.fileName))
+
+        let outcomes = await daemon.runChecks(scope: .all)
+
+        guard let outcome = outcomes[entry.id] else {
+            Issue.record("an enabled script entry must be checked")
+            return
+        }
+        if case .deferred(let reason, _) = outcome {
+            Issue.record("a persisted resolution must be probed, not deferred: \(reason)")
+        }
+        if case .ok = outcome {
+            Issue.record("the fixture's probe port is closed; the check must not pass")
+        }
+    }
+
     /// A direct tunnel (its relay call passes `label: nil`) must not inherit
     /// the last resolved upstream's label; an upstream tunnel keeps exactly
     /// the label it dialed with.
