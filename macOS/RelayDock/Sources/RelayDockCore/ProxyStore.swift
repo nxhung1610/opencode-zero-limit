@@ -563,10 +563,20 @@ public func checkProxy(_ proxyURL: String) async -> ProxyHealth {
     }.value
     let latency = result.latencySeconds.map { $0 * 1_000 }
     guard result.exitCode == 0, let status = result.statusCode, (200..<300).contains(status) else {
-        let message = result.statusCode.map { "HTTP \($0)" } ?? result.message ?? "proxy check failed"
+        let message = proxyCheckFailureMessage(statusCode: result.statusCode, curlMessage: result.message)
         return ProxyHealth(ok: false, latencyMs: nil, checkedAt: checkedAt, error: message)
     }
     return ProxyHealth(ok: true, latencyMs: latency, checkedAt: checkedAt)
+}
+
+/// Describes a failed check without pretending curl's `000` is a status:
+/// a real HTTP code when the server answered, curl's own diagnosis when the
+/// request died before any response, and a plain "no response" otherwise.
+func proxyCheckFailureMessage(statusCode: Int?, curlMessage: String?) -> String {
+    if let statusCode, statusCode > 0 {
+        return "HTTP \(statusCode)"
+    }
+    return curlMessage ?? "no response"
 }
 
 private struct ProxyCurlResult: Sendable {
