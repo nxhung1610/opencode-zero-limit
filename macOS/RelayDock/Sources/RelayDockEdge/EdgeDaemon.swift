@@ -623,7 +623,10 @@ actor EdgeDaemon {
             clientPort: clientPort,
             edgePort: edgePort,
             entryID: upstream?.entryID,
-            label: label ?? upstream?.label,
+            // Only the label the relay actually dialed with: `upstream`
+            // survives mode switches, so a direct tunnel must never be
+            // mislabeled with the last upstream it did not use.
+            label: label,
             peerPid: peer?.pid,
             peerName: peer?.name,
             startedAt: Date().timeIntervalSince1970,
