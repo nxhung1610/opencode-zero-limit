@@ -79,12 +79,12 @@ private extension UIFixturesTests {
                 resolvedAt: now - 240,
                 expiresAt: now + 540
             ),
-            lastErrors: ["dial timeout to gateway.example:8080"],
+            lastErrors: [],
             counters: .init(
                 resolutions: 23,
                 switches: 0,
-                dialFailures: 84,
-                streamFailures: 17,
+                dialFailures: 2,
+                streamFailures: 1,
                 directFallbacks: 2,
                 tunnelsTotal: 35,
                 tunnelsActive: 1
@@ -218,6 +218,12 @@ private extension UIFixturesTests {
             FixtureScenario(
                 name: "routing-auto-edge-live",
                 size: windowSize,
+                schemes: bothSchemes,
+                content: window(try edgeLiveModel())
+            ),
+            FixtureScenario(
+                name: "routing-auto-edge-live-tall",
+                size: CGSize(width: 680, height: 640),
                 schemes: bothSchemes,
                 content: window(try edgeLiveModel())
             ),
@@ -475,20 +481,21 @@ private extension UIFixturesTests {
     }
 
     /// A panel whose updater sits in a given phase, using the fixture seam so
-    /// rendering never touches the network or the disk.
+    /// rendering never touches the network or the disk. The running build is
+    /// the released v0.2.0 so the offered release reads truthfully.
     static func updatePanelModel(_ phase: UpdateModel.Phase) throws -> ProxyAppModel {
-        let model = try makeModel(mode: .auto, proxies: mixedPool)
+        let model = try makeModel(mode: .auto, proxies: mixedPool, currentVersion: SemanticVersion(tag: "0.2.0"))
         model.updates.applyPhaseForFixtures(phase)
         return model
     }
 
     static var fixtureRelease: UpdateRelease {
         UpdateRelease(
-            version: SemanticVersion(tag: "0.2.0")!,
-            tagName: "v0.2.0",
-            zipURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.2.0/RelayDock.app.zip")!,
-            checksumsURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.2.0/SHA256SUMS")!,
-            releasePageURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/tag/v0.2.0")!
+            version: SemanticVersion(tag: "0.3.0")!,
+            tagName: "v0.3.0",
+            zipURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.3.0/RelayDock.app.zip")!,
+            checksumsURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.3.0/SHA256SUMS")!,
+            releasePageURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/tag/v0.3.0")!
         )
     }
 
@@ -497,14 +504,18 @@ private extension UIFixturesTests {
         manualId: String? = nil,
         proxies: [ProxyEntry],
         tab: ProxyAppTab = .routing,
-        directFallback: Bool = false
+        directFallback: Bool = false,
+        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.3.0")
     ) throws -> ProxyAppModel {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-ui-fixtures", directoryHint: .isDirectory)
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let store = ProxyStore(configDirectory: directory)
         try store.save(ProxyState(mode: mode, manualId: manualId, proxies: proxies, directFallback: directFallback))
-        let model = ProxyAppModel(store: store)
+        // A bundle-built version, injected: offscreen renders otherwise show
+        // the test runner's missing version as "dev".
+        let updates = UpdateModel(configDirectory: directory, currentVersion: currentVersion)
+        let model = ProxyAppModel(store: store, updates: updates)
         model.load()
         model.selectedTab = tab
         return model
