@@ -30,6 +30,10 @@ final class ProxyAppModel: ObservableObject {
     @Published private(set) var isTesting = false
     @Published var isManualChooserPresented = false
     @Published private(set) var errorMessage: String?
+    /// A calm note about what the last Test All skipped — a script entry with
+    /// nothing resolved yet is not an error, so it never enters `errorMessage`
+    /// (which drives the modal alert). The pool header renders it.
+    @Published private(set) var checkNotice: String?
     @Published var selectedTab: ProxyAppTab = .routing
     /// The RelayDock Edge panel, refreshed by `pollEdgeStatusWhileVisible()`.
     @Published private(set) var edgePanel: EdgePanelState = .unknown
@@ -199,10 +203,10 @@ final class ProxyAppModel: ObservableObject {
 
     private func applyEdgeCheckResults(_ response: EdgeCheckResponse) async {
         var health: [String: ProxyHealth] = [:]
-        var deferredReasons: [String] = []
+        var deferredByID: [String: String] = [:]
         for (id, result) in response.results {
             if result.deferred {
-                deferredReasons.append(result.error ?? "deferred")
+                deferredByID[id] = result.error ?? "deferred"
                 continue
             }
             health[id] = ProxyHealth(
@@ -212,16 +216,37 @@ final class ProxyAppModel: ObservableObject {
                 error: result.error
             )
         }
+        // Pool order, so the notice reads the same as the list below it.
+        var skipped: [(label: String, reason: String)] = []
+        for proxy in state?.proxies ?? [] {
+            if let reason = deferredByID.removeValue(forKey: proxy.id) {
+                skipped.append((proxy.label, reason))
+            }
+        }
+        for (id, reason) in deferredByID.sorted(by: { $0.key < $1.key }) {
+            skipped.append((id, reason))
+        }
         do {
             state = try store.applyCheckResults(health)
             lastCheckRoute = .edge
-            errorMessage = deferredReasons.isEmpty
-                ? nil
-                : "RelayDock Edge skipped \(deferredReasons.count) check\(deferredReasons.count == 1 ? "" : "s"): \(deferredReasons[0])"
+            checkNotice = Self.skippedCheckNotice(skipped)
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
         await refreshEdgeStatus()
+    }
+
+    /// One line naming what Test All skipped and why: skipped checks are by
+    /// design (nothing to probe), so they read as a note, not as an error.
+    static func skippedCheckNotice(_ skipped: [(label: String, reason: String)]) -> String? {
+        guard let first = skipped.first else { return nil }
+        let count = skipped.count
+        let labels = skipped.map(\.label)
+        let named = labels.count > 3
+            ? labels.prefix(3).joined(separator: ", ") + ", …"
+            : labels.joined(separator: ", ")
+        return "Skipped \(count) check\(count == 1 ? "" : "s") (\(named)): \(first.reason)"
     }
 
     private func runInAppChecks() async {
@@ -237,6 +262,7 @@ final class ProxyAppModel: ObservableObject {
             let checked = try await store.checkAll()
             state = checked
             errorMessage = nil
+            checkNotice = nil
             let exported = ScriptCacheFile.make(snapshots: exportProxyScriptCacheSnapshots(), state: checked)
             try? ScriptCacheFile.load(from: cacheFileURL).merged(with: exported).save(to: cacheFileURL)
         } catch {
