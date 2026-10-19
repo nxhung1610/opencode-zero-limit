@@ -433,13 +433,19 @@ struct ProxyStoreTests {
         #expect(state.autoEligibleProxies.map(\.id) == ["script"])
     }
 
-    @Test func scriptHealthChecksResolveTheScriptBeforeChecking() async throws {
+    @Test func scriptHealthChecksProbeTheCachedResolutionWithoutRunningTheScript() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: directory) }
         let recorder = ScriptURLRecorder()
         let store = ProxyStore(configDirectory: directory, healthChecker: { url in await recorder.check(url) })
-        _ = try store.addProxyScript(name: "Custom", script: "return \"socks5://127.0.0.1:1080\";")
+        let added = try store.addProxyScript(
+            name: "Custom",
+            script: "throw new Error(\"a check must not run the script\");"
+        )
         _ = try store.addProxyURL("http://proxy-a.example:8080")
+        let scriptID = try #require(added.proxies.first(where: { $0.script != nil })?.id)
+        importProxyScriptCacheSnapshots([scriptID: #"{"url":"socks5://127.0.0.1:1080"}"#])
+        defer { removeProxyScriptCacheSnapshot(for: scriptID) }
 
         let checked = try await store.checkAll()
 
@@ -449,17 +455,18 @@ struct ProxyStoreTests {
         #expect(checked.proxies.first(where: { $0.script != nil })?.health?.ok == true)
     }
 
-    @Test func failingScriptsRecordAFailedHealthCheck() async throws {
+    @Test func scriptEntriesWithNothingResolvedYetKeepTheirLastHealth() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let store = ProxyStore(configDirectory: directory, healthChecker: { _ in ProxyHealth(ok: true, checkedAt: 1) })
-        _ = try store.addProxyScript(name: "Broken", script: "throw new Error(\"boom\");")
+        let recorder = ScriptURLRecorder()
+        let store = ProxyStore(configDirectory: directory, healthChecker: { url in await recorder.check(url) })
+        _ = try store.addProxyScript(name: "Unresolved", script: "throw new Error(\"boom\");")
 
         let checked = try await store.checkAll()
 
-        let health = checked.proxies[0].health
-        #expect(health?.ok == false)
-        #expect(health?.error?.contains("boom") == true)
+        let urls = await recorder.checkedURLs()
+        #expect(urls.isEmpty)
+        #expect(checked.proxies[0].health == nil)
     }
 
     @Test func editingAScriptUpdatesInPlaceAndKeepsIdentityAndSelection() throws {

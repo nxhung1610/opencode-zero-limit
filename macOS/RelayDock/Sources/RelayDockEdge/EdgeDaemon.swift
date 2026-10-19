@@ -716,8 +716,9 @@ actor EdgeDaemon {
             pushError("check failed: \(entry.label): \(health.error ?? "unknown")")
             log.warn("check failed: \(entry.label): \(health.error ?? "unknown")")
         case .deferred(let reason, let retryAfter):
-            // Script errors and provider throttles say nothing about the
-            // endpoint; they neither mark failed nor clear a failure streak.
+            // "Nothing to probe yet" (an unresolved script entry) says
+            // nothing about the endpoint; it neither marks failed nor
+            // clears a failure streak.
             nextCheckAt[entryID] = now + max(retryAfter, 30)
             log.warn("check deferred: \(entry.label): \(reason)")
         }
@@ -754,24 +755,47 @@ actor EdgeDaemon {
     }
 
     private func check(entry: ProxyEntry) async -> EdgeCheckOutcome {
-        if let script = entry.script {
-            do {
-                let entryID = entry.id
-                let resolved = try await Task.detached(priority: .utility) {
-                    try ProxyScriptRunner.resolve(script, cacheID: entryID)
-                }.value
-                let health = await checkProxy(resolved)
-                return health.ok ? .ok(health) : .failed(health)
-            } catch {
-                let message = error.localizedDescription
-                if let retryAfter = proxyScriptRetryAfterSeconds(from: message) {
-                    return .deferred(reason: message, retryAfter: retryAfter)
-                }
-                return .deferred(reason: message, retryAfter: 60)
+        if entry.script != nil {
+            // A check probes the proxy this entry is currently serving; it
+            // never resolves (rotates) the script. Rotation belongs to the
+            // router — launch, expiry, death recovery — and the provider's
+            // cooldown budget belongs to those resolutions, so Test All can
+            // neither rotate nor report a throttle.
+            guard let resolved = currentResolvedURL(for: entry) else {
+                return .deferred(
+                    reason: "no resolved proxy yet — this entry resolves at the next launch or connection",
+                    retryAfter: 60
+                )
             }
+            let health = await checkProxy(resolved)
+            return health.ok ? .ok(health) : .failed(health)
         }
         let health = await checkProxy(entry.url)
         return health.ok ? .ok(health) : .failed(health)
+    }
+
+    /// The URL an entry is currently serving: the live upstream when the entry
+    /// is routed, the pinned upstream when a pinned listener holds one, and
+    /// otherwise the resolution its script cache holds.
+    private func currentResolvedURL(for entry: ProxyEntry) -> String? {
+        Self.resolvedURL(
+            entryID: entry.id,
+            upstream: upstream,
+            pinned: pinnedUpstreams[entry.id],
+            cacheURL: proxyScriptCachedURL(for: entry.id)
+        )
+    }
+
+    /// Pure choice rule behind `currentResolvedURL(for:)`.
+    static func resolvedURL(
+        entryID: String,
+        upstream: EdgeUpstream?,
+        pinned: EdgeUpstream?,
+        cacheURL: String?
+    ) -> String? {
+        if let upstream, upstream.entryID == entryID { return upstream.url }
+        if let pinned { return pinned.url }
+        return cacheURL
     }
 
     // MARK: - Warm hop pool (upstream pre-dials)

@@ -199,7 +199,7 @@ final class ProxyAppModel: ObservableObject {
             lastCheckRoute = .edge
             errorMessage = deferredReasons.isEmpty
                 ? nil
-                : "RelayDock Edge deferred \(deferredReasons.count) check\(deferredReasons.count == 1 ? "" : "s"): \(deferredReasons[0])"
+                : "RelayDock Edge skipped \(deferredReasons.count) check\(deferredReasons.count == 1 ? "" : "s"): \(deferredReasons[0])"
         } catch {
             errorMessage = error.localizedDescription
         }

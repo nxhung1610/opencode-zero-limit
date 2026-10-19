@@ -177,6 +177,36 @@ struct ProxyAppModelTests {
         #expect(model.state?.proxies.first?.health?.ok == true)
     }
 
+    @Test @MainActor func testAllReportsSkippedEdgeChecksWithoutWritingHealth() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy.example:8080")
+        let entryID = imported.proxies[0].id
+        try writeEdgeConfig(in: directory)
+        let model = ProxyAppModel(
+            store: store,
+            edgeStatusProvider: { _ in nil },
+            edgeCheckRunner: { _ in
+                EdgeCheckResponse(results: [
+                    entryID: .init(
+                        ok: false,
+                        checkedAt: Date().timeIntervalSince1970 * 1_000,
+                        error: "no resolved proxy yet — this entry resolves at the next launch or connection",
+                        deferred: true,
+                        retryAfter: 60
+                    ),
+                ])
+            }
+        )
+        model.load()
+
+        await model.testAll()
+
+        #expect(model.lastCheckRoute == .edge)
+        #expect(model.state?.proxies.first?.health == nil)
+        #expect(model.errorMessage == "RelayDock Edge skipped 1 check: no resolved proxy yet — this entry resolves at the next launch or connection")
+    }
+
     @Test @MainActor func refreshEdgeStatusTracksConfigurationAndLiveness() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }

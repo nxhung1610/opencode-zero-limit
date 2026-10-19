@@ -137,6 +137,14 @@ public func importProxyScriptCacheSnapshots(_ snapshots: [String: String]) {
     ProxyScriptCache.shared.merge(validated)
 }
 
+/// The proxy URL an entry's script cache currently holds, when the snapshot
+/// carries the documented `url` field — the resolution the entry would serve
+/// right now. Health checks probe this instead of running the script, so a
+/// check can never rotate the exit or spend the provider's change cooldown.
+public func proxyScriptCachedURL(for id: String) -> String? {
+    ProxyScriptCache.shared.cachedURL(for: id)
+}
+
 /// Drops one entry's cached snapshot. RelayDock Edge calls this before a
 /// re-resolve after a dial failure: the provider may already consider the
 /// endpoint dead, while the cached snapshot would otherwise serve it again.

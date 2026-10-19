@@ -355,6 +355,19 @@ final class ProxyScriptCache: @unchecked Sendable {
         return snapshots[id]
     }
 
+    /// The resolved proxy URL this entry's snapshot carries — `cache.url`,
+    /// the field the rotation script treats as "the resolution in use". Nil
+    /// when nothing is cached, the snapshot is not a JSON object, or the
+    /// field is missing or blank.
+    func cachedURL(for id: String) -> String? {
+        guard let snapshot = snapshot(for: id),
+              let data = snapshot.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let url = object["url"] as? String else { return nil }
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     func store(_ json: String, for id: String) {
         lock.lock()
         defer { lock.unlock() }
