@@ -40,6 +40,9 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if model.state != nil {
+                UpdateFooterView(updates: model.updates, showsWhenIdle: false)
+                    .padding(.horizontal, AppLayout.windowGutter)
+                    .padding(.top, 6)
                 HonestyFootnote()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, AppLayout.windowGutter)
@@ -52,6 +55,9 @@ struct RootView: View {
                 model.load()
             }
             await model.pollEdgeStatusWhileVisible()
+        }
+        .task {
+            await model.updates.autoCheckIfDue()
         }
         .sheet(isPresented: $model.isManualChooserPresented) {
             ManualProxyChooser(model: model)

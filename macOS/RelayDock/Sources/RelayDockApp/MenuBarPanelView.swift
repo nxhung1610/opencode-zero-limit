@@ -17,6 +17,9 @@ struct MenuBarPanelView: View {
             Divider()
             actions
             Divider()
+            UpdateFooterView(updates: model.updates)
+                .padding(.horizontal, AppLayout.panelGutter)
+                .padding(.top, 10)
             HonestyFootnote()
                 .padding(.horizontal, AppLayout.panelGutter)
                 .padding(.vertical, 12)
@@ -27,6 +30,9 @@ struct MenuBarPanelView: View {
                 model.load()
             }
             await model.pollEdgeStatusWhileVisible()
+        }
+        .task {
+            await model.updates.autoCheckIfDue()
         }
     }
 
