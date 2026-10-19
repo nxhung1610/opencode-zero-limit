@@ -147,6 +147,63 @@ private extension UIFixturesTests {
         return model
     }
 
+    /// Edge running quietly: a live upstream with time left and all-zero
+    /// failures — the compact card's resting shape (no Failures row).
+    static func edgeQuietStatus(now: Double = Date().timeIntervalSince1970) -> EdgeStatusResponse {
+        EdgeStatusResponse(
+            pid: 62_361,
+            port: 57_211,
+            mode: .auto,
+            upstream: .init(
+                entryID: "px_rotating_exit",
+                label: "Rotating exit",
+                maskedURL: "http://rotator.example:10629",
+                source: "script",
+                resolvedAt: now - 60,
+                expiresAt: now + 240
+            ),
+            lastErrors: [],
+            counters: .init(
+                resolutions: 12,
+                switches: 0,
+                dialFailures: 0,
+                streamFailures: 0,
+                tunnelsTotal: 6,
+                tunnelsActive: 1
+            ),
+            tunnels: [
+                .init(
+                    clientPort: 52_841,
+                    peerPid: 6_494,
+                    peerName: "opencode",
+                    label: "Rotating exit",
+                    startedAt: now - 90,
+                    bytesUp: 12_000,
+                    bytesDown: 2_400_000,
+                    active: true
+                ),
+                .init(
+                    clientPort: 52_772,
+                    peerPid: 6_494,
+                    peerName: "opencode",
+                    label: "Rotating exit",
+                    startedAt: now - 300,
+                    endedAt: now - 240,
+                    bytesUp: 8_000,
+                    bytesDown: 1_100_000,
+                    active: false
+                ),
+            ],
+            launchedAt: now - 7_200
+        )
+    }
+
+    static func edgeQuietModel() throws -> ProxyAppModel {
+        let model = try makeModel(mode: .auto, proxies: mixedPool)
+        model.applyEdgePanelForFixtures(.running(edgeQuietStatus()))
+        return model
+    }
+
     static func scenarios() throws -> [FixtureScenario] {
         let bothSchemes: [ColorScheme] = [.dark, .light]
         let windowSize = CGSize(width: 680, height: 460)
@@ -162,6 +219,12 @@ private extension UIFixturesTests {
                 size: windowSize,
                 schemes: bothSchemes,
                 content: window(try edgeLiveModel())
+            ),
+            FixtureScenario(
+                name: "routing-auto-edge-quiet",
+                size: windowSize,
+                schemes: [.dark],
+                content: window(try edgeQuietModel())
             ),
             FixtureScenario(
                 name: "routing-manual",

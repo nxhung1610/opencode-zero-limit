@@ -46,7 +46,7 @@ struct EdgePanelView: View {
                 caption("RelayDock Edge is not running. It starts on demand at the next wrapped launch.")
             case .running(let status):
                 runningDetail(status)
-                caption("From Edge's own tunnel accounting.")
+                    .help("From Edge's own tunnel accounting.")
             }
         }
         .padding(.vertical, 2)
@@ -125,14 +125,14 @@ struct EdgePanelView: View {
                 Text("Retrying \(relativeTime(retryAt))")
             }
         }
-        LabeledContent("Traffic") {
-            Text("\(status.counters.tunnelsActive) active · \(status.counters.tunnelsTotal) total tunnels")
+        LabeledContent("Activity") {
+            Text(activityLine(status.counters))
         }
-        LabeledContent("Rotation") {
-            Text("\(status.counters.resolutions) resolutions · \(status.counters.switches) switches")
-        }
-        LabeledContent("Failures") {
-            Text("\(status.counters.dialFailures) dial · \(status.counters.streamFailures) stream")
+        if status.counters.dialFailures + status.counters.streamFailures > 0 {
+            LabeledContent("Failures") {
+                Text(failureLine(status.counters))
+                    .foregroundStyle(.orange)
+            }
         }
         if let lastError = status.lastErrors.last {
             LabeledContent("Last error") {
@@ -151,6 +151,19 @@ struct EdgePanelView: View {
             parts.append("\(upstream.strikes) strike\(upstream.strikes == 1 ? "" : "s")")
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func activityLine(_ counters: EdgeStatusResponse.Counters) -> String {
+        [
+            "\(counters.tunnelsActive) active",
+            "\(counters.tunnelsTotal) total tunnels",
+            "\(counters.resolutions) resolutions",
+            "\(counters.switches) switches",
+        ].joined(separator: " · ")
+    }
+
+    private func failureLine(_ counters: EdgeStatusResponse.Counters) -> String {
+        "\(counters.dialFailures) dial · \(counters.streamFailures) stream"
     }
 
     @ViewBuilder
