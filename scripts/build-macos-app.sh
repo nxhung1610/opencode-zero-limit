@@ -23,6 +23,14 @@ ICONSET="$STAGING_ROOT/RelayDock.iconset"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$ICONSET"
 cp "$PACKAGE/.build/release/RelayDock" "$BUNDLE/Contents/MacOS/RelayDock"
 cp "$ROOT/macOS/Info.plist" "$BUNDLE/Contents/Info.plist"
+# The wrapper pair rides inside the app so the Routing tab can install
+# routing without a source checkout. Fresh inode via rm+cp: cp over an
+# already-executed Mach-O reuses the inode and macOS then SIGKILLs it
+# ("Killed: 9") on the next launch.
+rm -f "$BUNDLE/Contents/Resources/relaydock-launch" "$BUNDLE/Contents/Resources/relaydock-edge"
+cp "$PACKAGE/.build/release/RelayDockLauncher" "$BUNDLE/Contents/Resources/relaydock-launch"
+cp "$PACKAGE/.build/release/RelayDockEdge" "$BUNDLE/Contents/Resources/relaydock-edge"
+chmod +x "$BUNDLE/Contents/Resources/relaydock-launch" "$BUNDLE/Contents/Resources/relaydock-edge"
 
 while read -r size name; do
   sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/$name" >/dev/null
@@ -43,6 +51,8 @@ iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/AppIcon.icns"
 plutil -lint "$BUNDLE/Contents/Info.plist"
 test -x "$BUNDLE/Contents/MacOS/RelayDock"
 test -s "$BUNDLE/Contents/Resources/AppIcon.icns"
+test -x "$BUNDLE/Contents/Resources/relaydock-launch"
+test -x "$BUNDLE/Contents/Resources/relaydock-edge"
 
 if [[ -e "$OUTPUT" ]]; then
   if [[ ! -d "$OUTPUT/Contents" ]]; then
@@ -53,6 +63,12 @@ if [[ -e "$OUTPUT" ]]; then
   cp -f "$BUNDLE/Contents/Info.plist" "$OUTPUT/Contents/Info.plist"
   cp -f "$BUNDLE/Contents/MacOS/RelayDock" "$OUTPUT/Contents/MacOS/RelayDock"
   cp -f "$BUNDLE/Contents/Resources/AppIcon.icns" "$OUTPUT/Contents/Resources/AppIcon.icns"
+  # Fresh inode for the wrapper pair (see above): the app may have run the
+  # copies already installed in this bundle.
+  rm -f "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
+  cp "$BUNDLE/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-launch"
+  cp "$BUNDLE/Contents/Resources/relaydock-edge" "$OUTPUT/Contents/Resources/relaydock-edge"
+  chmod +x "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
 else
   mv "$BUNDLE" "$OUTPUT"
 fi
@@ -65,4 +81,6 @@ codesign --verify --strict "$OUTPUT"
 plutil -lint "$OUTPUT/Contents/Info.plist"
 test -x "$OUTPUT/Contents/MacOS/RelayDock"
 test -s "$OUTPUT/Contents/Resources/AppIcon.icns"
+test -x "$OUTPUT/Contents/Resources/relaydock-launch"
+test -x "$OUTPUT/Contents/Resources/relaydock-edge"
 echo "Built $OUTPUT"

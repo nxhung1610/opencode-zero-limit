@@ -41,7 +41,7 @@ struct EdgePanelView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .notConfigured:
-                caption("RelayDock Edge is not installed. Run scripts/opencode-wrapper.sh install to set it up.")
+                caption("RelayDock Edge is not installed. Use the Routing setup card above to install it.")
             case .notRunning:
                 caption("RelayDock Edge is not running. It starts on demand at the next wrapped launch.")
             case .running(let status):

@@ -25,6 +25,10 @@ struct RoutingView: View {
                 }
 
                 Section {
+                    RoutingSetupView(model: model.routingSetup)
+                }
+
+                Section {
                     EdgePanelView(model: model)
                 }
             }
