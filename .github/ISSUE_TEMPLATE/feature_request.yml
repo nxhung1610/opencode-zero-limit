@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a change or a new capability for RelayDock.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        RelayDock is intentionally proxy-only: it does not manage OpenCode processes, log in to accounts, or handle quota recovery. Please check the [scope](https://github.com/nxhung1610/relaydock#scope) before proposing a feature.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible today?
+      placeholder: "When I ... I have to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should RelayDock do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, other tools, or a smaller change that would also solve it.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Proxy Pool
+        - Routing policy (Off / Manual / Auto)
+        - RelayDock Edge
+        - PATH wrapper / launcher
+        - Updates
+        - Documentation
+        - Other
+    validations:
+      required: true

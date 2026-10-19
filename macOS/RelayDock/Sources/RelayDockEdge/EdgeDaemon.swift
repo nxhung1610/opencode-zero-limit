@@ -364,6 +364,12 @@ actor EdgeDaemon {
         if let resolved {
             pinnedUpstreams[entry.id] = resolved
             pinnedErrors[entry.id] = nil
+            // A pinned resolution is a resolution: persist it so it survives
+            // an Edge restart the way a pool-wide one does — otherwise the
+            // entry reads as "nothing resolved yet" on the next Test All.
+            if entry.isCustomScript {
+                persistScriptCache(state: loadState() ?? .defaults)
+            }
         } else if pinnedErrors[entry.id] == nil {
             pinnedErrors[entry.id] = "the pinned entry \"\(entry.label)\" could not resolve an upstream"
         }
@@ -723,6 +729,13 @@ actor EdgeDaemon {
         // while routing is Off.
         guard let state = loadState(),
               let entry = state.proxies.first(where: { $0.id == entryID && $0.enabled }) else { return nil }
+        // A check probes what the entry is currently serving, and the
+        // resolution Edge persisted to `script-cache.json` is part of that
+        // answer: in Off mode warm-up never resolves, and a mode switch (or
+        // a restart before the first resolve) leaves the in-memory cache
+        // cold while the file still holds the last resolution. One stat once
+        // the file is unchanged.
+        syncScriptCacheFromDisk(state: state, force: false)
         let outcome = await check(entry: entry)
         let now = Date().timeIntervalSince1970
         switch outcome {

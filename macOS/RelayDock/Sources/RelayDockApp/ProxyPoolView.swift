@@ -54,6 +54,16 @@ struct ProxyPoolView: View {
                     .padding(.bottom, 10)
             }
 
+            if let notice = model.checkNotice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, AppLayout.windowGutter)
+                    .padding(.bottom, 10)
+                    .help("A skipped check still has nothing to probe; it is not a failure.")
+            }
+
             Divider()
 
             if let state = model.state, state.proxies.isEmpty {

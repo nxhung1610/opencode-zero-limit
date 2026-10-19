@@ -194,7 +194,7 @@ struct ProxyAppModelTests {
         #expect(model.state?.proxies.first?.health?.ok == true)
     }
 
-    @Test @MainActor func testAllReportsSkippedEdgeChecksWithoutWritingHealth() async throws {
+    @Test @MainActor func testAllSurfacesSkippedEdgeChecksAsANoticeWithoutWritingHealth() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let imported = try store.importProxies("http://proxy.example:8080")
@@ -221,7 +221,39 @@ struct ProxyAppModelTests {
 
         #expect(model.lastCheckRoute == .edge)
         #expect(model.state?.proxies.first?.health == nil)
-        #expect(model.errorMessage == "RelayDock Edge skipped 1 check: no resolved proxy yet — this entry resolves at the next launch or connection")
+        // A skip is a note, never the error alert.
+        #expect(model.errorMessage == nil)
+        #expect(model.checkNotice == "Skipped 1 check (proxy.example:8080): no resolved proxy yet — this entry resolves at the next launch or connection")
+    }
+
+    @Test @MainActor func testAllNoticeNamesEverySkippedEntry() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try store.addProxyScript(name: "Rotating", script: "return 'http://a.example:8080';")
+        let second = try store.addProxyScript(name: "Backup", script: "return 'http://b.example:8080';")
+        let entryIDs = [first.proxies[0].id, second.proxies[1].id]
+        try writeEdgeConfig(in: directory)
+        let model = ProxyAppModel(
+            store: store,
+            edgeStatusProvider: { _ in nil },
+            edgeCheckRunner: { _ in
+                EdgeCheckResponse(results: Dictionary(uniqueKeysWithValues: entryIDs.map {
+                    ($0, .init(
+                        ok: false,
+                        checkedAt: Date().timeIntervalSince1970 * 1_000,
+                        error: "no resolved proxy yet",
+                        deferred: true,
+                        retryAfter: 60
+                    ))
+                }))
+            }
+        )
+        model.load()
+
+        await model.testAll()
+
+        #expect(model.errorMessage == nil)
+        #expect(model.checkNotice == "Skipped 2 checks (Rotating, Backup): no resolved proxy yet")
     }
 
     @Test @MainActor func refreshEdgeStatusTracksConfigurationAndLiveness() async throws {

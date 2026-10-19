@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem with RelayDock.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not paste proxy credentials, tokens, or logs that contain them — redact URLs and secrets first.
+  - type: input
+    id: version
+    attributes:
+      label: RelayDock version
+      description: The version in the app footer, or the release tag you installed.
+      placeholder: "0.4.1"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: "macOS 14.5, MacBook Pro (M3)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation
+      options:
+        - DMG / release build
+        - Source checkout
+        - PATH wrapper only
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Proxy Pool
+        - Routing policy (Off / Manual / Auto)
+        - RelayDock Edge
+        - PATH wrapper / launcher
+        - Updates
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open RelayDock -> Routing
+        2. Set the mode to ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics (optional)
+      description: "Non-secret output from `relaydock-edge status`, or the relevant lines from edge.log. Redact proxy URLs and credentials."
+      render: text
+    validations:
+      required: false

@@ -520,20 +520,20 @@ private extension UIFixturesTests {
 
     /// A panel whose updater sits in a given phase, using the fixture seam so
     /// rendering never touches the network or the disk. The running build is
-    /// the released v0.2.0 so the offered release reads truthfully.
+    /// the released v0.4.0 so the offered release reads truthfully.
     static func updatePanelModel(_ phase: UpdateModel.Phase) throws -> ProxyAppModel {
-        let model = try makeModel(mode: .auto, proxies: mixedPool, currentVersion: SemanticVersion(tag: "0.2.0"))
+        let model = try makeModel(mode: .auto, proxies: mixedPool, currentVersion: SemanticVersion(tag: "0.4.0"))
         model.updates.applyPhaseForFixtures(phase)
         return model
     }
 
     static var fixtureRelease: UpdateRelease {
         UpdateRelease(
-            version: SemanticVersion(tag: "0.3.0")!,
-            tagName: "v0.3.0",
-            zipURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.3.0/RelayDock.app.zip")!,
-            checksumsURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.3.0/SHA256SUMS")!,
-            releasePageURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/tag/v0.3.0")!
+            version: SemanticVersion(tag: "0.4.1")!,
+            tagName: "v0.4.1",
+            zipURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.4.1/RelayDock.app.zip")!,
+            checksumsURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.4.1/SHA256SUMS")!,
+            releasePageURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/tag/v0.4.1")!
         )
     }
 
@@ -543,7 +543,7 @@ private extension UIFixturesTests {
         proxies: [ProxyEntry],
         tab: ProxyAppTab = .routing,
         directFallback: Bool = false,
-        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.3.0"),
+        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.4.1"),
         routingSetupState: RoutingSetupModel.State = .installed(
             .init(agentPlistInstalled: true, componentsOutOfDate: false)
         ),
