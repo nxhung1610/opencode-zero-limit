@@ -218,10 +218,10 @@ by Edge instead of at spawn time.
   runs without the Edge env), run `opencode service stop && opencode service start` from a wrapped
   shell once — or reboot. After that, rotations and mode changes **never** require another restart;
   a cold-started service inherits the wrapper env automatically.
-- **Uninstall / rollback:** wrapper script removes symlink, `relaydock-edge`, `edge.json`, agent
-  (if any); `proxies.json` and Edge cache remain user data unless explicitly cleared. Removing the
-  wrapper returns launches to direct; the previous spawn-time launcher can be rebuilt from git and
-  reinstalled as a downgrade path.
+- **Uninstall / rollback:** the wrapper script or the app's *Routing setup* card removes the symlink,
+  `relaydock-edge`, `relaydock-launch`, `edge.json`, and the agent (if any); `proxies.json` and Edge
+  cache remain user data unless explicitly cleared. Removing the wrapper returns launches to direct;
+  the previous spawn-time launcher can be rebuilt from git and reinstalled as a downgrade path.
 
 ## 6. What consumers see
 
@@ -287,6 +287,19 @@ by Edge instead of at spawn time.
   which always fail closed. Fail-closed remains the default; the launcher never routes direct on
   its own. The Routing tab shows the toggle (Manual/Auto), and the shared consequence line reads
   the setting.
+- **P4 — App-driven routing setup (implemented):** the app bundle carries `relaydock-launch` and
+  `relaydock-edge` in `Contents/Resources` (named so the installer's default sibling launcher
+  resolves inside the bundle; a SHA-256 comparison against the installed copies drives the drift
+  check), and `relaydock-edge` gains `install`/`uninstall` subcommands so app and script share one
+  installer. The Routing tab grows a *Routing setup* card: **Install Routing** runs the bundled
+  installer (same code path as the script — one installer, two frontends), **Update Components**
+  appears when the installed pair differs from this build, **Verify** asks the user's login shell
+  (`zsh -lic 'command -v opencode'`) and distinguishes "resolves to the wrapper" from a missing or
+  shadowed command (the PATH snippet is copyable text; the app never edits `~/.zshrc` or
+  `~/.zprofile`), and **Uninstall…** sits behind a confirmation that lists exactly what is removed
+  (agent, both binaries, symlink, `edge.json`) while the proxy pool and Edge's script cache stay.
+  Nothing runs unprompted, and the app still never launches or restarts OpenCode — the
+  `opencode service stop && opencode service start` hint is copyable text.
 
 ## 8. Alternatives considered
 

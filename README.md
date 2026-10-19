@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-dark.png">
-  <img width="680" alt="The RelayDock window on its Routing tab: Auto policy selected, the Direct fallback switch, and RelayDock Edge's live accounting below." src="docs/images/routing-light.png">
+  <img width="680" alt="The RelayDock window on its Routing tab: Auto policy selected, the Direct fallback switch, the Routing setup card, and RelayDock Edge's live accounting below." src="docs/images/routing-light.png">
 </picture>
 
 RelayDock is a compact native SwiftUI utility for managing a local proxy pool and its Off/Manual/Auto policy. It can import proxies, test enabled endpoints, and — with the optional PATH wrapper (see [PATH wrapper for OpenCode](#path-wrapper-for-opencode)) — show what **RelayDock Edge**, a small loopback daemon, is actually doing: the live upstream, rotation counters, and per-process tunnel attribution for everything routed through it. The app does **not** launch or restart OpenCode, and Edge verifies only the traffic that routes through it; direct traffic stays invisible.
@@ -24,12 +24,20 @@ RelayDock is distributed as an unsigned, unnotarized build, so macOS holds the f
 
 From then on, updates are in-app: a quiet daily check plus **Check for Updates** in every footer.
 
-**The PATH wrapper** — send new terminal `opencode` launches through RelayDock Edge — is a separate, opt-in step that currently installs from a source checkout:
+**The PATH wrapper** — send new terminal `opencode` launches through RelayDock Edge — installs straight from the app:
+
+1. Open RelayDock, go to the **Routing** tab, and click **Install Routing** in the *Routing setup* card. The app installs the same components as the script below: both binaries into `~/.local/bin`, an `opencode` symlink to the launcher (an existing `opencode` that is not the symlink is never replaced), `edge.json` written on first install, and the launchd agent. Running it again updates the binaries in place.
+2. Make sure `~/.local/bin` is on `PATH` in new terminals. The card offers a copyable snippet (`export PATH="$HOME/.local/bin:$PATH"`) and a **Verify** button that runs your login shell — `zsh -lic 'command -v opencode'` — and reports what `opencode` resolves to. The app never edits `~/.zshrc` or `~/.zprofile`.
+3. Restart OpenCode's background service once, when no session is active: `opencode service stop && opencode service start` (the card copies this too). Terminals that are already open keep their old environment either way.
+
+**Uninstall** lives in the same card: it removes the launchd agent, both `~/.local/bin` files, the `opencode` symlink, and `edge.json` — your proxy pool and Edge's script cache are kept, and the app lists exactly what it removes before you confirm.
+
+Installing from a source checkout, or on a headless machine, still works through the script (builds with Swift 6 + Xcode command line tools):
 
 ```sh
 git clone https://github.com/nxhung1610/relaydock.git
 cd relaydock
-scripts/opencode-wrapper.sh install   # builds if needed (Swift 6 + Xcode command line tools), installs both binaries, bootstraps the launchd agent
+scripts/opencode-wrapper.sh install
 ```
 
 The app deliberately does not launch or restart OpenCode, and it cannot set proxy variables for terminals you open later — those are read once at process start. That enforcement belongs to the wrapper: it sits in `PATH`, ensures Edge is running, and `exec`s the real binary under one constant loopback environment. The app's job is the saved policy and Edge's accounting. The release page also carries the standalone `relaydock-launch` and `relaydock-edge` binaries with a `SHA256SUMS` file for verification.
@@ -59,7 +67,7 @@ The app deliberately does not launch or restart OpenCode, and it cannot set prox
 - Opt in to **Direct fallback** (Manual/Auto only): when no proxy in the pool is usable, Edge connects directly instead of failing closed — the tunnel is labeled `direct (fallback)` in status and counted, so the degraded route is never silent. Off by default; direct traffic is not verified.
 - Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
 - Provide `RelayDockCore` helpers for consumers that launch their own child process and need to select a route and construct proxy environment variables.
-- Optionally install a PATH wrapper (`scripts/opencode-wrapper.sh install`) so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop; with an `edge.json` present the agent also declares launchd `Sockets`, so Edge starts on the first connection). Fail-closed on routing errors unless the pool's Direct fallback is enabled; Off mode never contacts Edge.
+- Optionally install a PATH wrapper — **Install Routing** in the app's *Routing setup* card, or `scripts/opencode-wrapper.sh install` from a source checkout — so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop; with an `edge.json` present the agent also declares launchd `Sockets`, so Edge starts on the first connection). Fail-closed on routing errors unless the pool's Direct fallback is enabled; Off mode never contacts Edge.
 - Show Edge's live status in the app: a RelayDock Edge section on the Routing tab and a compact line in the menu bar popover — mode, upstream with expiry, rotation/failure counters, provider cooldown, and recent tunnels attributed to the peer process that opened them. `Test All` delegates health checks to Edge (the owner of the script cache) and falls back in-process, labeled in the pool view, only when Edge is unreachable.
 
 A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy — only Edge's tunnel accounting speaks to real traffic, and it says nothing about traffic that bypasses Edge: **RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.**
@@ -156,7 +164,7 @@ return cache.url;
 
 ## PATH wrapper for OpenCode
 
-`scripts/opencode-wrapper.sh` installs an opt-in wrapper that applies the saved policy to new terminal `opencode` launches. The wrapper is deliberately thin: it reads `<config>/edge.json`, ensures **RelayDock Edge** is running, prints the routing line from Edge's status, and replaces itself with `opencode` under a **constant** proxy environment. Edge owns live resolution, rotation, health checks, and the script cache.
+`scripts/opencode-wrapper.sh` installs an opt-in wrapper that applies the saved policy to new terminal `opencode` launches — or install it straight from the app: **Routing** tab → *Routing setup* → **Install Routing**. Both routes install the same components; the app's copy ships inside the bundle, and its **Verify** button checks what a login shell actually resolves `opencode` to. The wrapper is deliberately thin: it reads `<config>/edge.json`, ensures **RelayDock Edge** is running, prints the routing line from Edge's status, and replaces itself with `opencode` under a **constant** proxy environment. Edge owns live resolution, rotation, health checks, and the script cache.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/launch-sequence-dark.png">

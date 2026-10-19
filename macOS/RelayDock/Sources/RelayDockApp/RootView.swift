@@ -54,6 +54,7 @@ struct RootView: View {
             if model.state == nil && model.loadError == nil {
                 model.load()
             }
+            model.routingSetup.refresh()
             await model.pollEdgeStatusWhileVisible()
         }
         .task {

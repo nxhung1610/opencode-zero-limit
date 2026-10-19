@@ -205,6 +205,32 @@ private extension UIFixturesTests {
         return model
     }
 
+    /// Wrapper absent: the card's install invitation over an Edge panel that
+    /// correctly reads "not installed".
+    static func routingSetupNotInstalledModel() throws -> ProxyAppModel {
+        let model = try makeModel(
+            mode: .auto,
+            proxies: mixedPool,
+            routingSetupState: .notInstalled,
+            routingSetupPathCheck: .unchecked
+        )
+        model.applyEdgePanelForFixtures(.notConfigured)
+        return model
+    }
+
+    /// Wrapper present but drifted, with a login shell that resolves
+    /// `opencode` to Homebrew — the card's attention shape.
+    static func routingSetupAttentionModel() throws -> ProxyAppModel {
+        let model = try makeModel(
+            mode: .auto,
+            proxies: mixedPool,
+            routingSetupState: .installed(.init(agentPlistInstalled: true, componentsOutOfDate: true)),
+            routingSetupPathCheck: .shadowed("/opt/homebrew/bin/opencode")
+        )
+        model.applyEdgePanelForFixtures(.running(edgeQuietStatus()))
+        return model
+    }
+
     static func scenarios() throws -> [FixtureScenario] {
         let bothSchemes: [ColorScheme] = [.dark, .light]
         let windowSize = CGSize(width: 680, height: 460)
@@ -256,6 +282,18 @@ private extension UIFixturesTests {
                 size: windowSize,
                 schemes: bothSchemes,
                 content: window(try makeModel(mode: .off, proxies: mixedPool))
+            ),
+            FixtureScenario(
+                name: "routing-setup-not-installed",
+                size: CGSize(width: 680, height: 640),
+                schemes: bothSchemes,
+                content: window(try routingSetupNotInstalledModel())
+            ),
+            FixtureScenario(
+                name: "routing-setup-attention",
+                size: CGSize(width: 680, height: 640),
+                schemes: [.dark],
+                content: window(try routingSetupAttentionModel())
             ),
             FixtureScenario(
                 name: "pool-list",
@@ -505,7 +543,11 @@ private extension UIFixturesTests {
         proxies: [ProxyEntry],
         tab: ProxyAppTab = .routing,
         directFallback: Bool = false,
-        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.3.0")
+        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.3.0"),
+        routingSetupState: RoutingSetupModel.State = .installed(
+            .init(agentPlistInstalled: true, componentsOutOfDate: false)
+        ),
+        routingSetupPathCheck: RoutingSetupModel.PathCheck = .ok
     ) throws -> ProxyAppModel {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-ui-fixtures", directoryHint: .isDirectory)
@@ -515,7 +557,16 @@ private extension UIFixturesTests {
         // A bundle-built version, injected: offscreen renders otherwise show
         // the test runner's missing version as "dev".
         let updates = UpdateModel(configDirectory: directory, currentVersion: currentVersion)
-        let model = ProxyAppModel(store: store, updates: updates)
+        // The setup card is seeded through its fixture seam: offscreen renders
+        // must never read the real home directory or spawn a process.
+        let routingSetup = RoutingSetupModel(
+            storeDirectory: directory,
+            bundledResources: nil,
+            environment: [:],
+            runProcess: { _, _, _ in RoutingSetupModel.ProcessResult(status: 0, stdout: "", stderr: "") }
+        )
+        routingSetup.applyForFixtures(state: routingSetupState, pathCheck: routingSetupPathCheck)
+        let model = ProxyAppModel(store: store, updates: updates, routingSetup: routingSetup)
         model.load()
         model.selectedTab = tab
         return model

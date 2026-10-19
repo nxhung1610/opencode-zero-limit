@@ -1,6 +1,6 @@
 # RelayDock proxy app — wireframe variants
 
-**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, a menu bar Edge line, and a shared routing-state presentation for the Routing tab and panel anchor (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
+**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, a menu bar Edge line, a shared routing-state presentation for the Routing tab and panel anchor, and the routing setup card that installs/uninstalls the PATH wrapper from the app (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
 
 ## Reference
 
@@ -153,6 +153,11 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 - **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers. Checks probe the proxy each entry is currently serving — live upstream, pinned upstream, or the resolution its script cache holds — and never run a script, so `Test All` can neither rotate an exit nor surface the provider's change cooldown; an entry with nothing resolved yet is reported as skipped, not failed. When Edge is unreachable the check falls back in-process, follows the same probe rule, and the pool header says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
 - **Menu bar — Edge line:** `Edge running · <upstream label | Direct | No upstream> · <N active>`, showing Edge's own mode only when it diverges from the saved one; `Edge not running` when the daemon does not answer (tooltip: starts on demand at the next wrapped launch). Hidden entirely when Edge is not configured.
 - **Honesty line (window footer + menu bar):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."
+
+## Implemented additions (routing setup)
+
+- **Routing tab — Routing setup card** (between the policy section and the Edge panel): not installed → the opt-in explanation, a primary **Install Routing**, and a "What it writes" disclosure listing every path the installer touches (`relaydock-launch`, `relaydock-edge`, the `opencode` symlink — never replacing a non-symlink `opencode` — the launchd agent plist, and `edge.json`). Installed → a **Login agent** row, a **New terminals** row that reports the login shell's own answer (`zsh -lic 'command -v opencode'`) after a **Verify** click — resolving to the wrapper is a green check; a miss or a shadowing path shows the copyable `export PATH="$HOME/.local/bin:$PATH"` snippet — a copyable `opencode service stop && opencode service start` hint, and **Uninstall…** behind a confirmation dialog that lists exactly what is removed (agent, both binaries, symlink, `edge.json`; the proxy pool and Edge's script cache stay). Components that differ from the app's build light an orange "Update Components" row; a missing agent offers "Repair Install". The app never edits shell profiles, nothing runs unprompted, and the standalone `scripts/opencode-wrapper.sh install` still covers source checkouts and headless machines.
+- **RelayDock Edge section — "not configured" caption:** now points at the card ("Use the Routing setup card above to install it.") instead of the install script.
 
 ## Implemented refinements (menu bar panel)
 
