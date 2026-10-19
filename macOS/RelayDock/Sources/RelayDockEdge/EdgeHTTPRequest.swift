@@ -95,8 +95,9 @@ struct EdgeHTTPRequest: Equatable {
     }
 
     /// The head to forward in absolute (proxy) form: the original head with
-    /// client proxy headers stripped, so Edge's token never leaks upstream,
-    /// plus the upstream's own `Proxy-Authorization` when it carries one.
+    /// client proxy headers stripped, so client-side proxy credentials never
+    /// leak upstream, plus the upstream's own `Proxy-Authorization` when it
+    /// carries one.
     func absoluteForwardHead(upstreamAuthorization: String?) -> Data {
         rewriteHead(line: nil, upstreamAuthorization: upstreamAuthorization)
     }
@@ -119,8 +120,8 @@ struct EdgeHTTPRequest: Equatable {
             let name = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first.map {
                 $0.trimmingCharacters(in: .whitespaces).lowercased()
             }
-            // The client's token and any proxy connection-management headers
-            // are hop-local; they must not travel to the upstream.
+            // Client-supplied proxy credentials and connection-management
+            // headers are hop-local; they must not travel to the upstream.
             if name == "proxy-authorization" || name == "proxy-connection" { continue }
             filtered.append(line)
         }

@@ -11,7 +11,7 @@ struct EdgeConfigFileTests {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appending(path: "edge.json")
-        let config = EdgeConfigFile(port: 57212, token: "abc123")
+        let config = EdgeConfigFile(port: 57212)
         try config.save(to: url)
 
         #expect(EdgeConfigFile.load(from: url) == config)
@@ -31,20 +31,39 @@ struct EdgeConfigFileTests {
         try Data("not json".utf8).write(to: url)
         #expect(EdgeConfigFile.load(from: url) == nil)
 
-        try EdgeConfigFile(version: 99, port: 57211, token: "t").save(to: url)
+        try EdgeConfigFile(version: 99, port: 57211).save(to: url)
         #expect(EdgeConfigFile.load(from: url) == nil)
-        try EdgeConfigFile(port: 0, token: "t").save(to: url)
-        #expect(EdgeConfigFile.load(from: url) == nil)
-        try EdgeConfigFile(port: 57211, token: "").save(to: url)
+        try EdgeConfigFile(port: 0).save(to: url)
         #expect(EdgeConfigFile.load(from: url) == nil)
     }
 
-    @Test func proxyURLIsAConstantTokenCarrierURL() {
-        // The `tok:@` (colon, empty password) shape is load-bearing: Bun's
-        // proxy parser ignores a bare username and OpenCode's fetch then never
-        // connects. See EdgeConfigFile's doc comment.
-        #expect(EdgeConfigFile(port: 57211, token: "tok").proxyURL == "http://tok:@127.0.0.1:57211")
-        #expect(EdgeConfigFile.proxyURL(token: "tok", port: 1) == "http://tok:@127.0.0.1:1")
+    /// A v0.4.0 file carries a `token` key that no longer exists in the model;
+    /// decoding must ignore it so upgrades never strand a working install.
+    @Test func legacyTokenKeyIsIgnored() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "edge.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"version":1,"port":57211,"token":"deadbeef"}"#.utf8).write(to: url)
+
+        let config = try #require(EdgeConfigFile.load(from: url))
+        #expect(config.port == 57211)
+        #expect(config.listeners.isEmpty)
+    }
+
+    @Test func savedFileCarriesNoToken() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "edge.json")
+        try EdgeConfigFile(port: 57211).save(to: url)
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(!text.contains("token"))
+    }
+
+    @Test func proxyURLPointsAtTheLoopbackPort() {
+        #expect(EdgeConfigFile(port: 57211).proxyURL == "http://127.0.0.1:57211")
+        #expect(EdgeConfigFile.proxyURL(port: 1) == "http://127.0.0.1:1")
     }
 
     @Test func configDirectoryHonorsEnvironmentOverrides() {
@@ -61,16 +80,8 @@ struct EdgeConfigFileTests {
         #expect(fileURL.path == "/tmp/relaydock-fixture/edge.json")
     }
 
-    @Test func tokensAreThirtyTwoHexCharactersAndUnique() {
-        let first = EdgeConfigFile.makeRandomToken()
-        let second = EdgeConfigFile.makeRandomToken()
-        #expect(first.count == 32)
-        #expect(first.allSatisfy { $0.isHexDigit })
-        #expect(first != second)
-    }
-
     @Test func defaultPortIsTheDocumentedOne() {
         #expect(EdgeConfigFile.defaultPort == 57211)
-        #expect(EdgeConfigFile(port: 57211, token: "t").version == EdgeConfigFile.currentVersion)
+        #expect(EdgeConfigFile(port: 57211).version == EdgeConfigFile.currentVersion)
     }
 }

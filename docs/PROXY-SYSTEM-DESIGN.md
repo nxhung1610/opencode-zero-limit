@@ -2,6 +2,11 @@
 
 **Status:** implemented — P0, P1, P2a, P2, and P3 shipped (§7 is the phase ledger).
 
+**Revision r5 (2026-10-19):** removes the token gate — Edge binds loopback only and serves any
+local client. The token protected the paid upstream from other local processes; the maintenance
+cost (a secret to document and manage, stale wrapped sessions surfacing as 407s after a
+reinstall) outweighed that on a single-user machine. Loopback remains the network boundary.
+
 **Revision r4 (2026-10-18):** records P3 (optional upgrades) as built — launchd socket activation,
 warm upstream sockets, and per-account listeners — and closes the §9 question on P3.
 
@@ -66,7 +71,7 @@ environment never changes; **RelayDock Edge**, a small local forwarding proxy, m
 decision per new connection. Rotation becomes invisible to consumers.
 
 ```
-terminal ── opencode (env: HTTP_PROXY=http://<token>:@127.0.0.1:57211)
+terminal ── opencode (env: HTTP_PROXY=http://127.0.0.1:57211)
                   │ CONNECT
                   ▼
             RelayDock Edge  ── reads policy live ──  proxies.json (app writes)
@@ -81,11 +86,11 @@ RelayDock app ── status + delegated checks + lifecycle ──► Edge
 
 | Component | What changes |
 |---|---|
-| **RelayDock Edge** (new executable, `relaydock-edge`) | Loopback HTTP proxy (`CONNECT` tunneling + absolute-URI forwarding), `http(s)`/`socks*` upstreams, live policy reads, rotation/failover, health scheduler, token-gated status API, libproc-based tunnel attribution, log. Reuses `RelayDockCore` (store + script runtime). No UI. |
+| **RelayDock Edge** (new executable, `relaydock-edge`) | Loopback HTTP proxy (`CONNECT` tunneling + absolute-URI forwarding), `http(s)`/`socks*` upstreams, live policy reads, rotation/failover, health scheduler, status API, libproc-based tunnel attribution, log. Reuses `RelayDockCore` (store + script runtime). No UI. |
 | **`relaydock-launch`** (rewritten, thinner) | No script resolution, no disk cache, no endpoint in env. Reads `edge.json` → ensures Edge is running → prints the routing line from Edge status → `execve`s OpenCode with the **constant** proxy environment. Off mode: no proxy env at all (Off stays truly off). |
 | **`RelayDockCore`** (mostly unchanged) | Keeps `selectForSpawn`/env helpers for library consumers; the wrapper stops using the script path. `ProxyScriptRuntime` gains the retry-after classification used by Edge. |
 | **RelayDock app** (P2) | Shows Edge status (upstream, rotations, tunnels, service attribution), delegates script health checks to Edge, manages Edge lifecycle. Pool editing unchanged. |
-| **State files** | `proxies.json` unchanged (app writes, Edge reads by mtime). New `edge.json` (port + token, written at install; read by wrapper/app). New Edge-owned script cache + `edge.log` (0600). |
+| **State files** | `proxies.json` unchanged (app writes, Edge reads by mtime). New `edge.json` (the loopback port, written at install; read by wrapper/app). New Edge-owned script cache + `edge.log` (0600). |
 
 **Route semantics stay recognizably “RelayDock”:** Manual/Auto keep the same fail-closed policy
 (`selectForSpawn` semantics: enabled+valid+not-known-failed, sticky binding), just executed live
@@ -161,15 +166,15 @@ by Edge instead of at spawn time.
 
 ### 4.4 Status API and verification (the honesty upgrade)
 
-- Identity is **token-based, not credential-based.** Verified empirically: macOS exposes no usable
-  peer credentials for TCP (`LOCAL_PEERPID` is `ENOPROTOOPT`; `LOCAL_PEERCRED` returns success
-  without writing the buffer; `LOCAL_PEEREPID` returns 0). The installer writes a random token to
-  `edge.json`; the proxy env carries it as `http://<token>:@127.0.0.1:<port>` and admin
-  endpoints require it as a header. The trailing colon is load-bearing: the Docker E2E verified
-  against the real binary (opencode v2.0.30, Bun) that a `user:` userinfo yields
-  `Proxy-Authorization: Basic base64("<token>:")`, while a bare `user@` userinfo makes its fetch
-  never connect at all. The same binary honors `NO_PROXY` for `localhost`/`127.0.0.1`, so CLI↔service
-  loopback traffic bypasses Edge (control run without `NO_PROXY` was routed through the proxy).
+- Identity: **none — the loopback bind is the only boundary (r5).** Every local process may use
+  the proxy; that same-machine trust domain is accepted deliberately for this single-user app.
+  The r2 token gate was removed because macOS exposes no usable peer credentials for TCP
+  (`LOCAL_PEERPID` is `ENOPROTOOPT`; `LOCAL_PEERCRED` returns success without writing the buffer;
+  `LOCAL_PEEREPID` returns 0) — a token was the only available gate, and its cost (a secret to
+  manage, 407s in wrapped sessions after a reinstall) outweighed the protection here. The proxy
+  env is the constant `http://127.0.0.1:<port>` (no userinfo). The same binary (opencode v2.0.30,
+  Bun) honors `NO_PROXY` for `localhost`/`127.0.0.1`, so CLI↔service loopback traffic bypasses
+  Edge (verified in the Docker E2E; a control run without `NO_PROXY` was routed through the proxy).
 - `GET http://127.0.0.1:<port>/__relaydock/status` → JSON: mode, upstream (label, masked URL,
   source, resolved/expires at), rotation counters, backoff state, last errors, and active/recent
   tunnels with **peer-process attribution** via a libproc fd scan (same-user only, on demand,
@@ -177,8 +182,8 @@ by Edge instead of at spawn time.
   exactly the trust domain we need; it is the mechanism `lsof` uses (verified working
   unprivileged on this machine).
 - `POST /__relaydock/check` → `{entryID}` → runs one health check through Edge.
-- Loopback-bind only, plus the token on every request. A future kernel-level hardening option is
-  a `pf` rule matching the user (P3, needs root; not on the critical path).
+- Loopback-bind only; no client authentication (r5). A future hardening option is a `pf` rule
+  matching the user (P3, needs root; not on the critical path), or reinstating an opt-in token.
 - Because Edge sees real tunnels keyed by peer process, RelayDock can finally report
   **evidence** — e.g. “OpenCode service (pid) tunneled 12 connections via BestProxy xoay, last
   2 min ago”. **Shipped wording (r3):** “RelayDock verifies traffic that routes through Edge;
@@ -190,7 +195,7 @@ by Edge instead of at spawn time.
 ## 5. Files, ports, lifecycle
 
 - **Default port `57211`** on `127.0.0.1`; installer probes for a free port, writes
-  `<config>/edge.json` (`{version, port, token}`); wrapper and app read it. Consumers never guess.
+  `<config>/edge.json` (`{version, port, listeners}`); wrapper and app read it. Consumers never guess.
   The port is **immutable once consumers hold it**: if Edge cannot bind at runtime it exits loudly
   (boot error in `edge.log`) and the launcher refuses with a port-conflict/reinstall hint. Silent
   renumbering is forbidden — it would strand the service’s env.
@@ -236,12 +241,12 @@ by Edge instead of at spawn time.
 
 - **P0 (done):** wrapper `execve` fix — terminal job control (PR #8).
 - **P1 — Edge core:** `relaydock-edge` target (proxy engine, rotation/failover with retry-on-dial,
-  health scheduler, token-gated status API, libproc attribution, log), wrapper rewrite (constant
-  env, ensure-Edge, status line), installer updates, app shares Edge’s script cache around
-  `checkAll()`, README/PRODUCT updates. Retires `LauncherCacheFile`.
-  Acceptance tests: hermetic rotation without process restart; token header actually arrives from
-  the real binary; TUI↔service localhost traffic under the Edge env (`NO_PROXY` with Bun — never
-  yet exercised end-to-end); one-time service activation followed by rotation with no restarts.
+  health scheduler, status API (token-gated until r5), libproc attribution, log), wrapper rewrite
+  (constant env, ensure-Edge, status line), installer updates, app shares Edge’s script cache
+  around `checkAll()`, README/PRODUCT updates. Retires `LauncherCacheFile`.
+  Acceptance tests: hermetic rotation without process restart; the proxy env reaches the real
+  binary; TUI↔service localhost traffic under the Edge env (`NO_PROXY` with Bun — never yet
+  exercised end-to-end); one-time service activation followed by rotation with no restarts.
 - **P2a — Edge stability (implemented):** relay-end classification (first-ender wins; client-induced
   cancels never strike), `noteTunnelFailure` (strike + snapshot drop + single-flight re-resolve +
   near-term health re-check), `Retry-After` on 502s issued during a provider cooldown, and a
@@ -316,8 +321,9 @@ by Edge instead of at spawn time.
 
 1. ~~Product wording for the verification upgrade in §4.4~~ **Resolved in r3 (P2):** shipped as
    “RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.”
-2. ~~Status API hardening via TCP peer credentials~~ **Resolved in r2:** unusable on macOS
-   (verified); replaced by the per-install token gate (§4.4).
+2. ~~Status API hardening via TCP peer credentials~~ **Resolved in r2, revised in r5:** unusable
+   on macOS (verified); the per-install token gate replaced it, then was removed — Edge now
+   serves any local client over loopback (§4.4).
 3. ~~Port policy~~ **Resolved in P1:** fixed default `57211` with installer probing and the
    immutable-once-consumed contract (§5); no derivation scheme.
 4. ~~Edge ownership of periodic health checks~~ **Resolved in P2a/P2:** 10-minute cadence with

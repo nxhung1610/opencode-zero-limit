@@ -2,9 +2,9 @@
 import Foundation
 import RelayDockCore
 
-/// Handles one client connection end to end: parse the head, gate on the
-/// token, route through the policy, dial (with the retry-on-dial contract),
-/// hand back the tunnel, and pump bytes until either side ends.
+/// Handles one client connection end to end: parse the head, route through
+/// the policy, dial (with the retry-on-dial contract), hand back the tunnel,
+/// and pump bytes until either side ends.
 final class EdgeClientConnection: @unchecked Sendable {
     private let socket: EdgeSocket
     private let daemon: EdgeDaemon
@@ -69,14 +69,6 @@ final class EdgeClientConnection: @unchecked Sendable {
     // MARK: - Admin API
 
     private func handleAdmin(_ request: EdgeHTTPRequest) async throws {
-        guard EdgeAuth.isAuthorized(headers: request.headers, token: config.token) else {
-            try await sendSimple(
-                status: 401, reason: "Unauthorized",
-                body: "Missing or invalid RelayDock edge token.",
-                extraHeaders: ["WWW-Authenticate: Bearer realm=\"relaydock\""]
-            )
-            return
-        }
         guard case .admin(let method, let path, let query) = request.kind else { return }
         switch (method, path) {
         case ("GET", "/__relaydock/status"):
@@ -113,15 +105,6 @@ final class EdgeClientConnection: @unchecked Sendable {
         port: UInt16,
         clientPrelude: Data
     ) async throws {
-        guard EdgeAuth.isAuthorized(headers: request.headers, token: config.token) else {
-            try await sendSimple(
-                status: 407, reason: "Proxy Authentication Required",
-                body: "RelayDock Edge requires its token (relaunch the wrapped command).",
-                extraHeaders: ["Proxy-Authenticate: Basic realm=\"relaydock\""]
-            )
-            return
-        }
-
         let decision = await daemon.decideRoute(pinning: pinnedEntryID)
         switch decision {
         case .direct:
@@ -184,15 +167,6 @@ final class EdgeClientConnection: @unchecked Sendable {
         port: UInt16,
         clientPrelude: Data
     ) async throws {
-        guard EdgeAuth.isAuthorized(headers: request.headers, token: config.token) else {
-            try await sendSimple(
-                status: 407, reason: "Proxy Authentication Required",
-                body: "RelayDock Edge requires its token (relaunch the wrapped command).",
-                extraHeaders: ["Proxy-Authenticate: Basic realm=\"relaydock\""]
-            )
-            return
-        }
-
         let decision = await daemon.decideRoute(pinning: pinnedEntryID)
         switch decision {
         case .direct:

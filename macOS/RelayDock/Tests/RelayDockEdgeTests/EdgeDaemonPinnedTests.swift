@@ -11,7 +11,7 @@ struct EdgeDaemonPinnedTests {
             .appending(path: "relaydock-pinned-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let store = ProxyStore(configDirectory: directory)
-        let config = EdgeConfigFile(port: 57999, token: "test")
+        let config = EdgeConfigFile(port: 57999)
         let log = EdgeLog(url: directory.appending(path: "edge.log"))
         return (directory, store, EdgeDaemon(config: config, directory: directory, log: log))
     }

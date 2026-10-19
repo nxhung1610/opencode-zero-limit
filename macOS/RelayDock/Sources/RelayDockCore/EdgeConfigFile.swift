@@ -1,14 +1,14 @@
 import Foundation
 
 /// The configuration the installer writes for RelayDock Edge (`edge.json`
-/// next to `proxies.json`): the loopback port Edge binds and the per-install
-/// token every consumer presents.
+/// next to `proxies.json`): the loopback port Edge binds.
 ///
-/// The token rides in the proxy URL's userinfo. The colon after it is
-/// load-bearing: OpenCode's fetch (Bun) never connects when the userinfo has
-/// no `username:password` colon, but sends `Proxy-Authorization: Basic`
-/// (`base64("<token>:")`) when it does — verified against opencode v2 in the
-/// Docker sandbox.
+/// Edge binds `127.0.0.1` only and does not authenticate clients — any process
+/// on this Mac may use the loopback proxy. The per-install token gate shipped
+/// in v0.4.0 was removed in v0.4.1: it protected the upstream proxy from other
+/// local processes, but the cost (a secret to manage, plus 407s in wrapped
+/// sessions left over from a previous install) outweighed that on a
+/// single-user machine.
 ///
 /// The port is immutable once consumers hold it. The installer probes for a
 /// free port at install time; a running Edge that cannot bind exits loudly
@@ -33,39 +33,36 @@ public struct EdgeConfigFile: Codable, Equatable, Sendable {
 
     public var version: Int
     public var port: Int
-    public var token: String
     public var listeners: [Listener]
 
     public init(
         version: Int = EdgeConfigFile.currentVersion,
         port: Int = EdgeConfigFile.defaultPort,
-        token: String,
         listeners: [Listener] = []
     ) {
         self.version = version
         self.port = port
-        self.token = token
         self.listeners = listeners
     }
 
     /// Older `edge.json` files have no `listeners` key; decoding tolerates
-    /// its absence so upgrades never strand a working install.
+    /// its absence so upgrades never strand a working install. A legacy
+    /// `token` key from v0.4.0 is ignored.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
         port = try container.decode(Int.self, forKey: .port)
-        token = try container.decode(String.self, forKey: .token)
         listeners = try container.decodeIfPresent([Listener].self, forKey: .listeners) ?? []
     }
 
-    /// `http://<token>:@127.0.0.1:<port>` — the constant value of every proxy
-    /// var (the trailing colon keeps Bun's proxy parser happy, see above) — the constant value a wrapped process holds.
+    /// `http://127.0.0.1:<port>` — the constant value of every proxy variable
+    /// a wrapped process holds.
     public var proxyURL: String {
-        Self.proxyURL(token: token, port: port)
+        Self.proxyURL(port: port)
     }
 
-    public static func proxyURL(token: String, port: Int) -> String {
-        "http://\(token):@127.0.0.1:\(port)"
+    public static func proxyURL(port: Int) -> String {
+        "http://127.0.0.1:\(port)"
     }
 
     /// The directory that holds `proxies.json`, `edge.json`, and Edge's state
@@ -96,13 +93,12 @@ public struct EdgeConfigFile: Codable, Equatable, Sendable {
 
     /// Loads a usable configuration. A missing, damaged, or future-version
     /// file returns nil so callers fail closed with a reinstall hint instead
-    /// of guessing a port or token.
+    /// of guessing a port.
     public static func load(from url: URL) -> EdgeConfigFile? {
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(EdgeConfigFile.self, from: data),
               decoded.version == currentVersion,
-              (1...65_535).contains(decoded.port),
-              !decoded.token.isEmpty else { return nil }
+              (1...65_535).contains(decoded.port) else { return nil }
         // Listener entries are best-effort hardening: one bad pin must never
         // take the primary listener down with it, so invalid entries are
         // dropped instead of failing the whole file.
@@ -130,13 +126,5 @@ public struct EdgeConfigFile: Codable, Equatable, Sendable {
         data.append(0x0A)
         try data.write(to: url, options: .atomic)
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    /// A fresh 128-bit token in hex. URL-safe inside proxy userinfo, so the
-    /// consumer-side environment never needs percent-encoding.
-    public static func makeRandomToken() -> String {
-        var generator = SystemRandomNumberGenerator()
-        let bytes = (0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
-        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 }

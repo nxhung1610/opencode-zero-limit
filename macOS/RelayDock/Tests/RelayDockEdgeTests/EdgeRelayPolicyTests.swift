@@ -65,7 +65,7 @@ struct EdgeRelayPolicyTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let daemon = EdgeDaemon(
-            config: EdgeConfigFile(port: 57211, token: "test-token"),
+            config: EdgeConfigFile(port: 57211),
             directory: directory,
             log: EdgeLog(url: directory.appendingPathComponent("edge.log"))
         )

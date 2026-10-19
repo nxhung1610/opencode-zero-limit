@@ -53,7 +53,7 @@ struct EdgeDaemonTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = ProxyStore(configDirectory: directory)
         let daemon = EdgeDaemon(
-            config: EdgeConfigFile(port: 57_999, token: "test"),
+            config: EdgeConfigFile(port: 57_999),
             directory: directory,
             log: EdgeLog(url: directory.appending(path: "edge.log"))
         )
@@ -81,7 +81,7 @@ struct EdgeDaemonTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let store = ProxyStore(configDirectory: directory)
         let daemon = EdgeDaemon(
-            config: EdgeConfigFile(port: 57_999, token: "test"),
+            config: EdgeConfigFile(port: 57_999),
             directory: directory,
             log: EdgeLog(url: directory.appending(path: "edge.log"))
         )
