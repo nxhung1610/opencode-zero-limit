@@ -10,13 +10,7 @@ struct RoutingView: View {
                 Section {
                     routingState(state)
 
-                    Picker("Proxy Mode", selection: modeSelection) {
-                        Text("Off").tag(ProxyMode.off.rawValue)
-                        Text("Manual").tag(ProxyMode.manual.rawValue)
-                        Text("Auto").tag(ProxyMode.auto.rawValue)
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.large)
+                    ModeSegmentedPicker(mode: modeBinding)
 
                     if state.mode == .manual {
                         manualProxyControl(state)
@@ -36,13 +30,10 @@ struct RoutingView: View {
         }
     }
 
-    private var modeSelection: Binding<String> {
+    private var modeBinding: Binding<ProxyMode> {
         Binding(
-            get: { model.state?.mode.rawValue ?? ProxyMode.off.rawValue },
-            set: { rawValue in
-                guard let mode = ProxyMode(rawValue: rawValue) else { return }
-                model.selectMode(mode)
-            }
+            get: { model.state?.mode ?? .off },
+            set: { model.selectMode($0) }
         )
     }
 
@@ -101,12 +92,10 @@ struct RoutingView: View {
                         Text("Choose an enabled proxy")
                             .foregroundStyle(.secondary)
                     }
-                    Button {
+                    Button("Choose…") {
                         model.isManualChooserPresented = true
-                    } label: {
-                        Text("Choose…")
-                            .padding(.vertical, 6)
                     }
+                    .appAction(.secondary, size: .large)
                     .disabled(model.manualCandidates.isEmpty)
                 }
             }

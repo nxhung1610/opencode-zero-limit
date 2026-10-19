@@ -30,6 +30,7 @@ struct RootView: View {
                         Text(loadError)
                     } actions: {
                         Button("Try Again") { model.reload() }
+                            .appAction(.secondary)
                     }
                 } else {
                     ProgressView("Loading proxy configuration…")
@@ -39,11 +40,9 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if model.state != nil {
-                Label("RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.", systemImage: "info.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                HonestyFootnote()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
+                    .padding(.horizontal, AppLayout.windowGutter)
                     .padding(.vertical, 10)
             }
         }
@@ -102,10 +101,11 @@ private struct ManualProxyChooser: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose a proxy for Manual")
-                .font(.title2.weight(.semibold))
-            Text("Manual mode requires an enabled proxy with a valid URL.")
-                .foregroundStyle(.secondary)
+            AppTitle(
+                title: "Choose a proxy for Manual",
+                subtitle: "Manual mode requires an enabled proxy with a valid URL.",
+                style: .modal
+            )
 
             List(model.manualCandidates) { proxy in
                 Button {
@@ -130,13 +130,11 @@ private struct ManualProxyChooser: View {
 
             HStack {
                 Spacer()
-                Button {
+                Button("Cancel") {
                     model.isManualChooserPresented = false
                     dismiss()
-                } label: {
-                    Text("Cancel")
-                        .padding(.vertical, 6)
                 }
+                .appAction(.secondary, size: .large)
                 .keyboardShortcut(.cancelAction)
             }
         }
