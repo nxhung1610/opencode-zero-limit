@@ -32,6 +32,14 @@ scripts/tps-bench.sh              # A/B TPS: wrapped (via Edge) vs direct, read 
 
 The app is currently unsigned and not notarized for public distribution.
 
+## Continuous delivery
+
+`ci.yml` tests every pull request and push to `main` (test suite + app bundle validation).
+`cd.yml` packages the same commits into downloadable build artifacts: `RelayDock.app.zip`, the
+`relaydock-edge` and `relaydock-launch` binaries, and a `SHA256SUMS` file — as a workflow artifact
+(30 days) on every run. Pushing a `v*` tag additionally publishes the same files as a GitHub
+Release. Packaged builds are unsigned, exactly like local `scripts/build-*.sh` ones.
+
 ## Core library
 
 Add the `macOS/RelayDock` Swift package and import `RelayDockCore` from a process-launching consumer:
