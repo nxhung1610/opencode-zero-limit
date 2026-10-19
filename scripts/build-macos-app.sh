@@ -57,6 +57,11 @@ else
   mv "$BUNDLE" "$OUTPUT"
 fi
 
+# Ad-hoc sign the whole bundle: it covers Info.plist and Resources, and it is
+# what lets the updater verify a downloaded copy with `codesign --verify --strict`.
+codesign --force --sign - "$OUTPUT"
+codesign --verify --strict "$OUTPUT"
+
 plutil -lint "$OUTPUT/Contents/Info.plist"
 test -x "$OUTPUT/Contents/MacOS/RelayDock"
 test -s "$OUTPUT/Contents/Resources/AppIcon.icns"

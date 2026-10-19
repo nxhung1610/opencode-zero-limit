@@ -38,11 +38,14 @@ final class ProxyAppModel: ObservableObject {
     @Published private(set) var lastCheckRoute: CheckRoute?
 
     private let store: ProxyStore
+    /// The updater's lifecycle; the footer rows render it, nothing else mutates it.
+    let updates: UpdateModel
     private let edgeStatusProvider: @Sendable (EdgeConfigFile) async -> EdgeStatusResponse?
     private let edgeCheckRunner: @Sendable (EdgeConfigFile) async -> EdgeCheckResponse?
 
     init(
         store: ProxyStore = ProxyStore(),
+        updates: UpdateModel? = nil,
         edgeStatusProvider: @escaping @Sendable (EdgeConfigFile) async -> EdgeStatusResponse? = { config in
             await EdgeStatusClient.fetchStatusAsync(config: config)
         },
@@ -51,6 +54,7 @@ final class ProxyAppModel: ObservableObject {
         }
     ) {
         self.store = store
+        self.updates = updates ?? UpdateModel(configDirectory: store.fileURL.deletingLastPathComponent())
         self.edgeStatusProvider = edgeStatusProvider
         self.edgeCheckRunner = edgeCheckRunner
     }

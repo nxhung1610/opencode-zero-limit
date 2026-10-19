@@ -388,6 +388,26 @@ private extension UIFixturesTests {
                 schemes: [.dark],
                 content: panel(try makeModel(mode: .manual, manualId: "px_gateway_east", proxies: mixedPool))
             ),
+            FixtureScenario(
+                name: "panel-update-available",
+                size: nil,
+                schemes: bothSchemes,
+                content: panel(try updatePanelModel(.available(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "panel-update-ready",
+                size: nil,
+                schemes: [.dark],
+                content: panel(try updatePanelModel(.ready(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "panel-update-failed",
+                size: nil,
+                schemes: [.dark],
+                content: panel(try updatePanelModel(
+                    .failed("The downloaded archive failed its SHA-256 check; nothing was installed.")
+                ))
+            ),
         ]
     }
 
@@ -438,6 +458,24 @@ private extension UIFixturesTests {
         AnyView(
             MenuBarPanelView(model: model)
                 .background(.background)
+        )
+    }
+
+    /// A panel whose updater sits in a given phase, using the fixture seam so
+    /// rendering never touches the network or the disk.
+    static func updatePanelModel(_ phase: UpdateModel.Phase) throws -> ProxyAppModel {
+        let model = try makeModel(mode: .auto, proxies: mixedPool)
+        model.updates.applyPhaseForFixtures(phase)
+        return model
+    }
+
+    static var fixtureRelease: UpdateRelease {
+        UpdateRelease(
+            version: SemanticVersion(tag: "0.2.0")!,
+            tagName: "v0.2.0",
+            zipURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.2.0/RelayDock.app.zip")!,
+            checksumsURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/download/v0.2.0/SHA256SUMS")!,
+            releasePageURL: URL(string: "https://github.com/nxhung1610/relaydock/releases/tag/v0.2.0")!
         )
     }
 
