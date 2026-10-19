@@ -279,7 +279,7 @@ struct ProxyAppModelTests {
 
     private func writeEdgeConfig(in directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let json = #"{"version":1,"port":57211,"token":"app-model-test-token"}"#
+        let json = #"{"version":1,"port":57211}"#
         try Data(json.utf8).write(to: directory.appending(path: "edge.json"))
     }
 

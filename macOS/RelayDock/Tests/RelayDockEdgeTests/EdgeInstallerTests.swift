@@ -30,7 +30,6 @@ import Testing
 
         let config = try #require(EdgeConfigFile.load(from: fixture.config.appending(path: "edge.json")))
         #expect((57_211...57_230).contains(config.port))
-        #expect(config.token.count == 32)
 
         let plistURL = EdgeLaunchAgent.plistURL(environment: fixture.environment)
         let plistData = try Data(contentsOf: plistURL)
@@ -55,7 +54,7 @@ import Testing
     @Test func installKeepsAnExistingEdgeConfig() throws {
         let fixture = try InstallFixture()
         defer { fixture.cleanUp() }
-        try EdgeConfigFile(port: 59_999, token: "deadbeef")
+        try EdgeConfigFile(port: 59_999)
             .save(to: fixture.config.appending(path: "edge.json"))
         let output = OutputCapture()
 
@@ -65,7 +64,6 @@ import Testing
         #expect(code == 0)
         let config = try #require(EdgeConfigFile.load(from: fixture.config.appending(path: "edge.json")))
         #expect(config.port == 59_999)
-        #expect(config.token == "deadbeef")
         #expect(output.text.contains("already configured (port 59999)"))
     }
 

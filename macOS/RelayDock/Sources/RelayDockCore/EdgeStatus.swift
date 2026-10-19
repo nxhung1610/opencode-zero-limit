@@ -212,7 +212,6 @@ public enum EdgeStatusClient {
         guard let url = URL(string: "http://127.0.0.1:\(config.port)/__relaydock/status") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         return perform(request, timeout: timeout) { data in
             guard let status = try? JSONDecoder().decode(EdgeStatusResponse.self, from: data),
                   status.ok,
@@ -227,7 +226,6 @@ public enum EdgeStatusClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
-        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         return perform(request, timeout: timeout) { _ in true } ?? false
     }
 
@@ -272,7 +270,6 @@ public enum EdgeStatusClient {
     ) async -> EdgeStatusResponse? {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/__relaydock/status")!)
         request.timeoutInterval = timeout
-        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         return await performAsync(request: request, timeout: timeout) { data in
             guard let status = try? JSONDecoder().decode(EdgeStatusResponse.self, from: data),
                   status.ok,
@@ -303,7 +300,6 @@ public enum EdgeStatusClient {
         guard let url = components.url else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         return await performAsync(request: request, timeout: timeout) { data in
             try? JSONDecoder().decode(EdgeCheckResponse.self, from: data)
         }

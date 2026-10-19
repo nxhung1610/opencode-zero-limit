@@ -36,7 +36,7 @@ struct EdgeMain {
     Usage: relaydock-edge [run|init|stop|status|agent-plist|install|uninstall]
 
       run          Run the daemon (default); reads edge.json next to proxies.json.
-      init         Write edge.json with a free port and a fresh token (installer).
+      init         Write edge.json with a free port (installer).
       stop         Stop Edge: unloads the launchd agent when it manages this
                    install, otherwise asks the running instance to shut down.
       status       Print the live status JSON (exit 1 when not running).
@@ -137,9 +137,9 @@ struct EdgeMain {
         case failure(String)
     }
 
-    /// Loads `edge.json`, or writes a fresh one with a free loopback port and
-    /// a token. On upgrades the existing file is kept — the port never
-    /// renumbers once consumers hold it.
+    /// Loads `edge.json`, or writes a fresh one with a free loopback port.
+    /// On upgrades the existing file is kept — the port never renumbers once
+    /// consumers hold it.
     static func ensureInitialized(environment: [String: String]) -> InitOutcome {
         let configURL = EdgeConfigFile.fileURL(environment: environment)
         if let existing = EdgeConfigFile.load(from: configURL) {
@@ -148,7 +148,7 @@ struct EdgeMain {
         guard let port = EdgePortProbe.firstFreePort(startingAt: EdgeConfigFile.defaultPort, attempts: 20) else {
             return .failure("relaydock-edge: no free loopback port found near \(EdgeConfigFile.defaultPort).")
         }
-        let config = EdgeConfigFile(port: port, token: EdgeConfigFile.makeRandomToken())
+        let config = EdgeConfigFile(port: port)
         do {
             try config.save(to: configURL)
         } catch {
@@ -367,7 +367,7 @@ struct EdgeMain {
             print("RelayDock Edge is not configured (\(configURL.path) is missing).")
             exit(1)
         }
-        print("edge.json: port \(config.port), token \(config.token.prefix(6))…")
+        print("edge.json: port \(config.port)")
         guard let status = EdgeStatusClient.fetchStatus(config: config) else {
             print("RelayDock Edge is not running.")
             exit(1)

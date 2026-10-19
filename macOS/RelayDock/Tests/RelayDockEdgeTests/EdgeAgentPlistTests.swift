@@ -12,7 +12,7 @@ struct EdgeAgentPlistTests {
             .appending(path: "relaydock-plist-\(UUID().uuidString)", directoryHint: .isDirectory)
         let configDirectory = home.appending(path: "config", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
-        let config = EdgeConfigFile(port: 57211, token: "abc", listeners: listeners)
+        let config = EdgeConfigFile(port: 57211, listeners: listeners)
         try config.save(to: configDirectory.appending(path: "edge.json"))
         return configDirectory
     }

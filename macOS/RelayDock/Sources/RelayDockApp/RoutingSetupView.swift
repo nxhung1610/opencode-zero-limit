@@ -146,7 +146,7 @@ struct RoutingSetupView: View {
                 writtenPath("~/.local/bin/relaydock-edge", "the tunnel daemon")
                 writtenPath("~/.local/bin/opencode", "a symlink to the launcher; an existing non-symlink opencode is never replaced")
                 writtenPath("~/Library/LaunchAgents/com.nxhung.relaydock.edge.plist", "the login agent that keeps Edge available")
-                writtenPath("edge.json", "Edge's port and token — written once, kept on reinstall")
+                writtenPath("edge.json", "Edge's loopback port — written once, kept on reinstall")
             }
             .padding(.top, 4)
         }

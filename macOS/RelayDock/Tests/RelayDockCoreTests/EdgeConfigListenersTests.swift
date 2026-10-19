@@ -16,14 +16,14 @@ struct EdgeConfigListenersTests {
     }
 
     @Test func decodesConfigsWithoutListeners() throws {
-        let url = try write(#"{"version":1,"port":57211,"token":"abc"}"#)
+        let url = try write(#"{"version":1,"port":57211}"#)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let config = EdgeConfigFile.load(from: url)
         #expect(config?.listeners.isEmpty == true)
     }
 
     @Test func decodesPinnedListeners() throws {
-        let url = try write(#"{"version":1,"port":57211,"token":"abc","listeners":[{"port":57212,"entryID":"px_b"}]}"#)
+        let url = try write(#"{"version":1,"port":57211,"listeners":[{"port":57212,"entryID":"px_b"}]}"#)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let config = EdgeConfigFile.load(from: url)
         #expect(config?.listeners == [EdgeConfigFile.Listener(port: 57212, entryID: "px_b")])
@@ -31,7 +31,7 @@ struct EdgeConfigListenersTests {
 
     @Test func dropsInvalidListenerEntriesWithoutFailingTheFile() throws {
         let url = try write("""
-        {"version":1,"port":57211,"token":"abc","listeners":[
+        {"version":1,"port":57211,"listeners":[
           {"port":0,"entryID":"px_a"},
           {"port":57211,"entryID":"px_dupPrimary"},
           {"port":57213,"entryID":"  "},
@@ -45,7 +45,7 @@ struct EdgeConfigListenersTests {
     }
 
     @Test func roundTripsListenersThroughSave() throws {
-        let url = try write(#"{"version":1,"port":57211,"token":"abc"}"#)
+        let url = try write(#"{"version":1,"port":57211}"#)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         var config = try #require(EdgeConfigFile.load(from: url))
         config.listeners = [EdgeConfigFile.Listener(port: 57212, entryID: "px_b")]

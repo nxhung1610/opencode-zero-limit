@@ -87,7 +87,7 @@ struct EdgeHTTPRequestTests {
         let request = try #require(parse(
             "GET http://example.com/a HTTP/1.1\r\n"
             + "Host: example.com\r\n"
-            + "Proxy-Authorization: Basic edge-token\r\n"
+            + "Proxy-Authorization: Basic client-proxy-secret\r\n"
             + "Proxy-Connection: keep-alive\r\n"
             + "User-Agent: test\r\n\r\n"
         ))
@@ -103,11 +103,11 @@ struct EdgeHTTPRequestTests {
         let request = try #require(parse(
             "GET http://example.com/a HTTP/1.1\r\n"
             + "Host: example.com\r\n"
-            + "Proxy-Authorization: Basic edge-token\r\n\r\n"
+            + "Proxy-Authorization: Basic client-proxy-secret\r\n\r\n"
         ))
         let head = String(data: request.absoluteForwardHead(upstreamAuthorization: "Basic up"), encoding: .utf8) ?? ""
         #expect(head.hasPrefix("GET http://example.com/a HTTP/1.1\r\n"))
         #expect(head.contains("Proxy-Authorization: Basic up\r\n"))
-        #expect(!head.contains("edge-token"))
+        #expect(!head.contains("client-proxy-secret"))
     }
 }

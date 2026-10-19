@@ -5,7 +5,7 @@
 # config directory, a stub `opencode` command, and fake localhost services —
 # no real OpenCode CLI, no provider accounts, no network. Covers the P1
 # acceptance paths: cold launch, warm/sticky launch, rotation without a
-# process restart, script-edit invalidation, the token gate, fail-closed
+# process restart, script-edit invalidation, the open loopback port, fail-closed
 # behaviour, the spawn race, crash respawn, job control; the P2 paths:
 # agent kickstart/bootout, mid-stream-death and zero-byte-stall strikes,
 # Retry-After on throttled 502s; and the P3 paths: a launchd-activated
@@ -192,7 +192,6 @@ rm -f "$COUNT_FILE"
 # --- edge configuration -----------------------------------------------------
 "$EDGE" init > /dev/null
 EDGE_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$CONFIG/edge.json")"
-EDGE_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$CONFIG/edge.json")"
 
 # --- stub opencode ----------------------------------------------------------
 cat > "$STUB_DIRECTORY/opencode" <<STUBEOF
@@ -257,7 +256,7 @@ run_launcher() {
 edge_pid() { lsof -nP -iTCP:"$EDGE_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 edge_stop() { "$EDGE" stop >/dev/null 2>&1 || true; }
 provider_count() { cat "$COUNT_FILE" 2>/dev/null || echo 0; }
-status_json() { curl -s --max-time 5 -H "Authorization: Bearer $EDGE_TOKEN" "http://127.0.0.1:$EDGE_PORT/__relaydock/status"; }
+status_json() { curl -s --max-time 5 "http://127.0.0.1:$EDGE_PORT/__relaydock/status"; }
 counter() { status_json | python3 -c 'import json,sys; print(json.load(sys.stdin)["counters"].get(sys.argv[1], 0))' "$1"; }
 
 echo "== scenario 1: cold launch spawns Edge on demand and routes through it =="
@@ -267,8 +266,8 @@ rm -f "$COUNT_FILE" "$PROXY_LOG_A" "$RECORD.args" "$RECORD.env" "$RECORD.proxy" 
 run_launcher hello
 check "stub received the arguments" grep -q "^hello$" "$RECORD.args"
 check "stub reached the proxy successfully" grep -q "^200$" "$RECORD.proxy"
-check "HTTP_PROXY is the constant Edge carrier URL" grep -qx "HTTP_PROXY=http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" "$RECORD.env"
-check "ALL_PROXY carries the same constant URL" grep -qx "ALL_PROXY=http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" "$RECORD.env"
+check "HTTP_PROXY is the constant Edge carrier URL" grep -qx "HTTP_PROXY=http://127.0.0.1:$EDGE_PORT" "$RECORD.env"
+check "ALL_PROXY carries the same constant URL" grep -qx "ALL_PROXY=http://127.0.0.1:$EDGE_PORT" "$RECORD.env"
 check "NO_PROXY covers localhost" grep -qE "^NO_PROXY=.*127\.0\.0\.1" "$RECORD.env"
 check "Edge was spawned" test -n "$(edge_pid)"
 check "Edge resolved through the provider" test "$(provider_count)" -ge 1
@@ -323,12 +322,11 @@ check "stub reached a proxy successfully" grep -q "^200$" "$RECORD.proxy"
 check "the edited script re-ran the provider" test "$(provider_count)" -gt "$COUNT_BEFORE"
 check "Edge stayed up across the edit" test "$(edge_pid)" = "$EDGE_PID_BEFORE"
 
-echo "== scenario 5: the token gate covers proxy and admin paths =="
-check "wrong proxy token gets 407" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -x "http://wrong-token@127.0.0.1:$EDGE_PORT" http://relaydock.test/x)" = "407"
-check "missing admin token gets 401" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' "http://127.0.0.1:$EDGE_PORT/__relaydock/status")" = "401"
-check "wrong admin token gets 401" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Authorization: Bearer wrong" "http://127.0.0.1:$EDGE_PORT/__relaydock/status")" = "401"
-check "the real token can read status" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Authorization: Bearer $EDGE_TOKEN" "http://127.0.0.1:$EDGE_PORT/__relaydock/status")" = "200"
-check "the real token can run checks" curl -s --max-time 30 -X POST -H "Authorization: Bearer $EDGE_TOKEN" "http://127.0.0.1:$EDGE_PORT/__relaydock/check?scope=all" | grep -q '"results"'
+echo "== scenario 5: the loopback port serves any local client (no token gate) =="
+check "unauthenticated status reads 200" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' "http://127.0.0.1:$EDGE_PORT/__relaydock/status")" = "200"
+check "unauthenticated proxy request reaches the fake proxy" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -x "http://127.0.0.1:$EDGE_PORT" http://relaydock.test/health)" = "200"
+check "a stale Authorization header is ignored" test "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' -H "Authorization: Bearer stale-token" "http://127.0.0.1:$EDGE_PORT/__relaydock/status")" = "200"
+check "unauthenticated checks work" curl -s --max-time 30 -X POST "http://127.0.0.1:$EDGE_PORT/__relaydock/check?scope=all" | grep -q '"results"'
 
 echo "== scenario 6: Off mode launches without a proxy and never contacts Edge =="
 edge_stop
@@ -470,7 +468,7 @@ write_store auto "return \"http://127.0.0.1:$PROXY_HANG_PORT\";"
 rm -f "$PROXY_LOG_HANG"
 STREAM_BEFORE="$(counter streamFailures)"
 # The client waits past the 30s stall window without a single response byte.
-curl -s --max-time 35 -x "http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" http://relaydock.test/zombie -o /dev/null || true
+curl -s --max-time 35 -x "http://127.0.0.1:$EDGE_PORT" http://relaydock.test/zombie -o /dev/null || true
 for _ in $(seq 1 25); do
   if [[ "$(counter streamFailures)" -gt "$STREAM_BEFORE" ]]; then break; fi
   sleep 0.2
@@ -481,11 +479,11 @@ check "edge.log names the zero-byte stall" grep -q "zero-byte stall" "$CONFIG/ed
 
 echo "== scenario 15: a throttled provider surfaces Retry-After on the 502 =="
 write_store auto "throw new Error(\"Con 25s moi co doi proxy\");"
-HEADERS="$(curl -s -D - -o /dev/null --max-time 10 -x "http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT" http://relaydock.test/cooldown 2>/dev/null | tr -d '\r' || true)"
+HEADERS="$(curl -s -D - -o /dev/null --max-time 10 -x "http://127.0.0.1:$EDGE_PORT" http://relaydock.test/cooldown 2>/dev/null | tr -d '\r' || true)"
 check "the refusal is a 502" grep -q "^HTTP/1.1 502" <<< "$HEADERS"
 check "the refusal carries Retry-After" grep -qE "^Retry-After: 2[0-9]$" <<< "$HEADERS"
-check "the body explains the provider cooldown" bash -c "curl -s --max-time 10 -x 'http://$EDGE_TOKEN:@127.0.0.1:$EDGE_PORT' http://relaydock.test/cooldown | grep -q 'moi co doi proxy'"
-check "status reports the cooldown deadline" bash -c "curl -s --max-time 5 -H 'Authorization: Bearer $EDGE_TOKEN' 'http://127.0.0.1:$EDGE_PORT/__relaydock/status' | grep -q throttleRetryAt"
+check "the body explains the provider cooldown" bash -c "curl -s --max-time 10 -x 'http://127.0.0.1:$EDGE_PORT' http://relaydock.test/cooldown | grep -q 'moi co doi proxy'"
+check "status reports the cooldown deadline" bash -c "curl -s --max-time 5 'http://127.0.0.1:$EDGE_PORT/__relaydock/status' | grep -q throttleRetryAt"
 
 echo "== scenario 16: the edge CLI reports and stops the daemon =="
 if "$EDGE" status > /dev/null 2>&1; then
@@ -528,7 +526,7 @@ check "the running Edge kept serving (bootout is launchd's job)" test -n "$(edge
 
 echo "== scenario 19: checks stay available in Off mode =="
 write_store off "$CACHING_SCRIPT"
-curl -s --max-time 30 -X POST -H "Authorization: Bearer $EDGE_TOKEN" \
+curl -s --max-time 30 -X POST \
   "http://127.0.0.1:$EDGE_PORT/__relaydock/check?scope=all" > "$WORK/off-check.json"
 echo "  off-check body: $(head -c 300 "$WORK/off-check.json" | tr -d '\n')"
 check "off-mode checks still run and return results" grep -q '"px_sandbox"' "$WORK/off-check.json"
@@ -597,7 +595,7 @@ assert listeners.get(int(sys.argv[3]), {}).get("entryID") == "px_sandbox", liste
 ' "$WORK/status-pinned.json" "$EDGE_PORT" "$PIN_PORT"
 : > "$PROXY_LOG_A"
 : > "$PROXY_LOG_B"
-PIN_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -x "http://$EDGE_TOKEN:@127.0.0.1:$PIN_PORT" http://relaydock.test/health || true)"
+PIN_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -x "http://127.0.0.1:$PIN_PORT" http://relaydock.test/health || true)"
 check "a request through the pinned port reaches the fake proxy" test "$PIN_CODE" = "200"
 check "the pinned request was routed via the pool upstream" bash -c "grep -q 'relaydock.test' '$PROXY_LOG_A' || grep -q 'relaydock.test' '$PROXY_LOG_B'"
 cp "$WORK/edge.json.plain" "$CONFIG/edge.json"
