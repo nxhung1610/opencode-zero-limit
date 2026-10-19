@@ -19,14 +19,17 @@ jobs:
         run: scripts/build-launcher.sh
       - name: Build macOS app bundle
         run: scripts/build-macos-app.sh
+      - name: Build drag-to-Applications DMG
+        run: scripts/build-dmg.sh
       - name: Package downloadables
         run: |
           mkdir -p dist
           ditto -c -k --keepParent build/RelayDock.app dist/RelayDock.app.zip
+          cp build/RelayDock.dmg dist/RelayDock.dmg
           cp build/relaydock-edge dist/relaydock-edge
           cp build/relaydock-launch dist/relaydock-launch
           chmod +x dist/relaydock-edge dist/relaydock-launch
-          (cd dist && shasum -a 256 RelayDock.app.zip relaydock-edge relaydock-launch > SHA256SUMS)
+          (cd dist && shasum -a 256 RelayDock.dmg RelayDock.app.zip relaydock-edge relaydock-launch > SHA256SUMS)
           ls -lh dist
       - name: Upload the packaged build
         uses: actions/upload-artifact@v4
@@ -53,7 +56,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes "Unsigned arm64 build for macOS 14+. Unzip RelayDock.app.zip, then right-click Open on first launch; relaydock-edge and relaydock-launch are the Edge daemon and PATH-wrapper binaries — see the README for install steps. Checksums in SHA256SUMS." \
+            --notes "Unsigned arm64 build for macOS 14+. Install from RelayDock.dmg (drag to Applications) or unzip RelayDock.app.zip; right-click Open on first launch either way. relaydock-edge and relaydock-launch are the Edge daemon and PATH-wrapper binaries — see the README for install steps. Checksums in SHA256SUMS." \
             --generate-notes \
           || gh release upload "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
