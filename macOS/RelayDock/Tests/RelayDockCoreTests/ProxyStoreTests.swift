@@ -243,6 +243,18 @@ struct ProxyStoreTests {
         #expect(invalid.error == "Invalid proxy URL or unsupported protocol")
     }
 
+    @Test func failedCheckMessagesDescribeSilenceWithoutHttpZero() {
+        #expect(proxyCheckFailureMessage(statusCode: nil, curlMessage: nil) == "no response")
+        #expect(proxyCheckFailureMessage(statusCode: 0, curlMessage: nil) == "no response")
+        #expect(
+            proxyCheckFailureMessage(
+                statusCode: 0,
+                curlMessage: "curl: (56) CONNECT tunnel failed, response 502"
+            ) == "curl: (56) CONNECT tunnel failed, response 502"
+        )
+        #expect(proxyCheckFailureMessage(statusCode: 502, curlMessage: "ignored") == "HTTP 502")
+    }
+
     @Test func checkAllMergesHealthWithoutOverwritingConcurrentProxyChanges() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: directory) }
