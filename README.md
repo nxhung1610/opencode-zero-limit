@@ -9,6 +9,31 @@ RelayDock is a compact native SwiftUI utility for managing a local proxy pool an
 
 **Platform:** macOS 14 or later. **Language:** Swift 6.
 
+## Installation
+
+RelayDock is distributed as an unsigned, unnotarized build, so macOS holds the first launch until you approve it once.
+
+**The app** — import and test proxies, set the Off/Manual/Auto policy, and watch what Edge is doing:
+
+1. Download `RelayDock.dmg` from the [latest release](https://github.com/nxhung1610/relaydock/releases/latest).
+2. Open the disk image and drag **RelayDock** into **Applications**.
+3. Approve the first launch (Gatekeeper cannot verify the unsigned build):
+   - macOS 14: right-click the app → **Open** → **Open** again.
+   - macOS 15 or later: try to open it once, then approve it under **System Settings → Privacy & Security → Open Anyway**.
+   - Or clear the download quarantine directly: `xattr -dr com.apple.quarantine /Applications/RelayDock.app`
+
+From then on, updates are in-app: a quiet daily check plus **Check for Updates** in every footer.
+
+**The PATH wrapper** — send new terminal `opencode` launches through RelayDock Edge — is a separate, opt-in step that currently installs from a source checkout:
+
+```sh
+git clone https://github.com/nxhung1610/relaydock.git
+cd relaydock
+scripts/opencode-wrapper.sh install   # builds if needed (Swift 6 + Xcode command line tools), installs both binaries, bootstraps the launchd agent
+```
+
+The app deliberately does not launch or restart OpenCode, and it cannot set proxy variables for terminals you open later — those are read once at process start. That enforcement belongs to the wrapper: it sits in `PATH`, ensures Edge is running, and `exec`s the real binary under one constant loopback environment. The app's job is the saved policy and Edge's accounting. The release page also carries the standalone `relaydock-launch` and `relaydock-edge` binaries with a `SHA256SUMS` file for verification.
+
 ## Screenshots
 
 **Proxy Pool.** Import one endpoint or a whole list, test the enabled ones, and keep each entry's health, enabled state, and actions together; custom JavaScript entries live in the same list.
