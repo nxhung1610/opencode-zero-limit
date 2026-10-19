@@ -160,3 +160,16 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 - **Header:** no longer repeats the saved mode; the anchor and the segmented control already say it.
 - **Row freshness:** rows append a compact check age (`· 2m ago`, `1h ago`, `2d ago`) when the health timestamp is in the stored millisecond format; legacy seconds timestamps and in-progress test runs show none. Row tooltips and VoiceOver labels carry outcome, error, and age (`ProxyStatus.detail`).
 - **Chrome:** "Test All" gains a refresh glyph, the error banner's Dismiss is a link, the honesty line gains an info glyph, and section padding uses the 12-point rhythm.
+
+## Shared components (app design system)
+
+Every surface draws its controls from one place — `Sources/RelayDockApp/AppComponents.swift` — so the menu bar panel, the window, and the sheets cannot drift apart:
+
+- **`AppLayout`:** one set of spacing rules. Side gutters: panel 14, window 22, sheets 20; one title-to-subtitle spacing (3); one status-glyph size (13).
+- **`AppActionRole` + `.appAction(_:size:)`:** the only way a button picks its look. `primary` (bordered prominent) is a surface's one forward action, `secondary` (bordered) supports it, and `link` is for inline tertiary affordances. Sizes follow the surface: `.small` in the panel, `.regular` inside forms and rows, `.large` for window headers, sheets, and empty-state calls to action. No manual padding or one-off `controlSize` on buttons; the one exception is a `ProgressView` spinner nested inside a button label (`.small`).
+- **`ModeSegmentedPicker`:** the Off/Manual/Auto control, identical on the panel and the Routing tab (same size, same tags).
+- **`AppTitle`:** surface titles (headline + caption subtitle) and modal titles (title2 + body subtitle) — one header shape per surface.
+- **`ProxyHealthIcon` and `ProxyStatusText`:** the row glyph and the pass/fail/excluded copy with its optional "· 2m ago" age, shared by the pool window and the menu bar panel (`ProxyStatus` supplies the words and colors).
+- **`HonestyFootnote`:** the honesty line's wording, glyph, and style, shared by the panel and the window footer.
+
+Action weights in place: panel — secondary "Test All" and primary "Open RelayDock…" as equal-width halves; pool header — secondary "Test All" and primary "Import"; sheets — secondary "Cancel" and primary Add/Import/Save; empty states — one primary call to action ("Import Proxies").

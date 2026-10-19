@@ -130,7 +130,7 @@ struct ProxyImportSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, 20)
+                .padding(.horizontal, AppLayout.sheetGutter)
                 .padding(.top, 20)
                 .padding(.bottom, 10)
 
@@ -143,7 +143,7 @@ struct ProxyImportSheet: View {
                 .pickerStyle(.segmented)
                 .controlSize(.large)
                 .labelsHidden()
-                .padding(.horizontal, 20)
+                .padding(.horizontal, AppLayout.sheetGutter)
                 .padding(.bottom, 6)
             }
 
@@ -161,12 +161,12 @@ struct ProxyImportSheet: View {
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, AppLayout.sheetGutter)
                     .padding(.top, 6)
             }
 
             footer
-                .padding(.horizontal, 20)
+                .padding(.horizontal, AppLayout.sheetGutter)
                 .padding(.top, 10)
                 .padding(.bottom, 16)
         }
@@ -178,13 +178,11 @@ struct ProxyImportSheet: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(isEditing ? "Edit Script" : "Add Proxies")
-                .font(.title2.weight(.semibold))
-            Text(headerSubtitle)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        AppTitle(
+            title: isEditing ? "Edit Script" : "Add Proxies",
+            subtitle: headerSubtitle,
+            style: .modal
+        )
     }
 
     private var headerSubtitle: String {
@@ -378,7 +376,7 @@ struct ProxyImportSheet: View {
             } label: {
                 Text("Test Script")
             }
-            .controlSize(.large)
+            .appAction(.secondary, size: .large)
             .disabled(script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || scriptTest == .running)
             scriptTestResult
         }
@@ -466,19 +464,15 @@ struct ProxyImportSheet: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button {
+            Button("Cancel") {
                 dismiss()
-            } label: {
-                Text("Cancel")
-                    .padding(.vertical, 6)
             }
+            .appAction(.secondary, size: .large)
             .keyboardShortcut(.cancelAction)
-            Button {
+            Button(primaryButtonTitle) {
                 submit()
-            } label: {
-                Text(primaryButtonTitle)
-                    .padding(.vertical, 6)
             }
+            .appAction(.primary, size: .large)
             .keyboardShortcut(.defaultAction)
             .disabled(!canSubmit)
         }

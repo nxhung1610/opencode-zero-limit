@@ -17,15 +17,9 @@ struct MenuBarPanelView: View {
             Divider()
             actions
             Divider()
-            Label(
-                "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.",
-                systemImage: "info.circle"
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            HonestyFootnote()
+                .padding(.horizontal, AppLayout.panelGutter)
+                .padding(.vertical, 12)
         }
         .frame(width: 360)
         .task {
@@ -37,10 +31,9 @@ struct MenuBarPanelView: View {
     }
 
     private var header: some View {
-        Text("RelayDock")
-            .font(.headline)
+        AppTitle(title: "RelayDock")
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, AppLayout.panelGutter)
             .padding(.top, 12)
             .padding(.bottom, 12)
     }
@@ -49,13 +42,7 @@ struct MenuBarPanelView: View {
     private var content: some View {
         if let state = model.state {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Proxy Mode", selection: modeSelection) {
-                    Text("Off").tag(ProxyMode.off.rawValue)
-                    Text("Manual").tag(ProxyMode.manual.rawValue)
-                    Text("Auto").tag(ProxyMode.auto.rawValue)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                ModeSegmentedPicker(mode: modeBinding)
 
                 stateAnchor(state)
 
@@ -81,7 +68,7 @@ struct MenuBarPanelView: View {
                     proxyList(state)
                 }
             }
-            .padding(14)
+            .padding(AppLayout.panelGutter)
         } else if let loadError = model.loadError {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Proxy configuration unavailable", systemImage: "exclamationmark.triangle")
@@ -93,9 +80,9 @@ struct MenuBarPanelView: View {
                 Button("Try Again") {
                     model.reload()
                 }
-                .controlSize(.small)
+                .appAction(.secondary, size: .small)
             }
-            .padding(14)
+            .padding(AppLayout.panelGutter)
         } else {
             HStack(spacing: 8) {
                 ProgressView()
@@ -114,35 +101,38 @@ struct MenuBarPanelView: View {
             Button {
                 Task { await model.testAll() }
             } label: {
-                if model.isTesting {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Testing…")
+                Group {
+                    if model.isTesting {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Testing…")
+                        }
+                    } else {
+                        Label("Test All", systemImage: "arrow.clockwise")
                     }
-                } else {
-                    Label("Test All", systemImage: "arrow.clockwise")
                 }
+                .frame(maxWidth: .infinity)
             }
+            .appAction(.secondary, size: .small)
             .disabled(model.isTesting || model.state?.enabledProxies.isEmpty != false)
-            .frame(maxWidth: .infinity)
 
-            Button("Open RelayDock…") {
+            Button {
                 presentWindow()
+            } label: {
+                Label("Open RelayDock…", systemImage: "macwindow")
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .frame(maxWidth: .infinity)
+            .appAction(.primary, size: .small)
         }
-        .controlSize(.small)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, AppLayout.panelGutter)
         .padding(.vertical, 12)
     }
 
-    private var modeSelection: Binding<String> {
+    private var modeBinding: Binding<ProxyMode> {
         Binding(
-            get: { model.state?.mode.rawValue ?? ProxyMode.off.rawValue },
-            set: { rawValue in
-                guard let mode = ProxyMode(rawValue: rawValue) else { return }
+            get: { model.state?.mode ?? .off },
+            set: { mode in
                 model.selectMode(mode)
                 if model.isManualChooserPresented {
                     presentWindow()
@@ -212,6 +202,7 @@ struct MenuBarPanelView: View {
 
         return HStack(spacing: 5) {
             Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.green)
                 .accessibilityLabel("RelayDock Edge")
             Text(parts.joined(separator: " · "))
@@ -231,8 +222,7 @@ struct MenuBarPanelView: View {
             Button("Dismiss") {
                 model.clearError()
             }
-            .controlSize(.small)
-            .buttonStyle(.link)
+            .appAction(.link, size: .small)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -247,7 +237,7 @@ struct MenuBarPanelView: View {
             Button("Add Proxies…") {
                 presentWindow(tab: .pool)
             }
-            .controlSize(.small)
+            .appAction(.secondary, size: .small)
         }
     }
 
@@ -270,8 +260,7 @@ struct MenuBarPanelView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .appAction(.link, size: .small)
                 .padding(.top, 8)
             }
         }
@@ -279,24 +268,14 @@ struct MenuBarPanelView: View {
 
     private func proxyRow(_ proxy: ProxyEntry, mode: ProxyMode) -> some View {
         HStack(spacing: 8) {
-            healthSymbol(proxy)
+            ProxyHealthIcon(proxy: proxy)
             Text(proxy.label)
                 .font(.callout.weight(.medium))
                 .foregroundStyle(proxy.enabled ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            HStack(spacing: 4) {
-                Text(ProxyStatus.text(for: proxy, mode: mode, isTesting: model.isTesting))
-                    .monospacedDigit()
-                    .foregroundStyle(ProxyStatus.color(for: proxy, isTesting: model.isTesting))
-                if let age = rowAge(proxy) {
-                    Text("· \(age)")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .font(.footnote)
-            .lineLimit(1)
+            ProxyStatusText(proxy: proxy, mode: mode, isTesting: model.isTesting)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 4)
@@ -320,23 +299,6 @@ struct MenuBarPanelView: View {
             parts.append("checked \(age)")
         }
         return parts.joined(separator: ", ")
-    }
-
-    @ViewBuilder
-    private func healthSymbol(_ proxy: ProxyEntry) -> some View {
-        if !proxy.enabled {
-            Image(systemName: "circle")
-                .foregroundStyle(.tertiary)
-                .accessibilityLabel("Disabled")
-        } else if let health = proxy.health {
-            Image(systemName: health.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(health.ok ? Color.green : Color.orange)
-                .accessibilityLabel(health.ok ? "Last test passed" : "Last test failed")
-        } else {
-            Image(systemName: "questionmark.circle")
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Not tested")
-        }
     }
 
     private func presentWindow(tab: ProxyAppTab? = nil) {

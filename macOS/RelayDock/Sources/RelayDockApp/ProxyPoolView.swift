@@ -12,42 +12,34 @@ struct ProxyPoolView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Proxy Pool")
-                        .font(.headline)
-                    Text("\(model.state?.proxies.count ?? 0) proxies")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                AppTitle(title: "Proxy Pool", subtitle: "\(model.state?.proxies.count ?? 0) proxies")
 
                 Spacer()
 
                 Button {
                     Task { await model.testAll() }
                 } label: {
-                    Group {
-                        if model.isTesting {
-                            HStack(spacing: 7) {
-                                ProgressView().controlSize(.small)
-                                Text("Testing…")
-                            }
-                        } else {
-                            Label("Test All", systemImage: "arrow.clockwise")
+                    if model.isTesting {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text("Testing…")
                         }
+                    } else {
+                        Label("Test All", systemImage: "arrow.clockwise")
                     }
-                    .padding(.vertical, 6)
                 }
+                .appAction(.secondary, size: .large)
                 .disabled(model.isTesting || model.state?.enabledProxies.isEmpty != false)
 
                 Button {
                     showImport = true
                 } label: {
                     Label("Import", systemImage: "plus")
-                        .padding(.vertical, 6)
                 }
+                .appAction(.primary, size: .large)
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
-            .padding(.horizontal, 22)
+            .padding(.horizontal, AppLayout.windowGutter)
             .padding(.top, 18)
             .padding(.bottom, 12)
 
@@ -58,7 +50,7 @@ struct ProxyPoolView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
+                    .padding(.horizontal, AppLayout.windowGutter)
                     .padding(.bottom, 10)
             }
 
@@ -70,12 +62,10 @@ struct ProxyPoolView: View {
                 } description: {
                     Text("Import proxy URLs to build your pool.")
                 } actions: {
-                    Button {
+                    Button("Import Proxies") {
                         showImport = true
-                    } label: {
-                        Text("Import Proxies")
-                            .padding(.vertical, 6)
                     }
+                    .appAction(.primary, size: .large)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let proxies = model.state?.proxies {
@@ -144,7 +134,7 @@ private struct ProxyPoolRow: View {
                     expandedID = isExpanded ? nil : proxy.id
                 } label: {
                     HStack(spacing: 10) {
-                        healthSymbol
+                        ProxyHealthIcon(proxy: currentProxy)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(proxy.label)
                                 .font(.body.weight(.medium))
@@ -169,15 +159,13 @@ private struct ProxyPoolRow: View {
 
                 Spacer(minLength: 8)
 
-                Text(ProxyStatus.text(
-                    for: currentProxy,
+                ProxyStatusText(
+                    proxy: currentProxy,
                     mode: model.state?.mode ?? .off,
-                    isTesting: model.isTesting
-                ))
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(ProxyStatus.color(for: currentProxy, isTesting: model.isTesting))
-                .lineLimit(1)
+                    isTesting: model.isTesting,
+                    showsAge: false,
+                    font: .caption
+                )
                 .frame(minWidth: 96, alignment: .trailing)
 
                 Toggle(
@@ -258,7 +246,7 @@ private struct ProxyPoolRow: View {
                             .foregroundStyle(.secondary)
                     } else if currentProxy.enabled, currentProxy.hasValidDefinition {
                         Button("Use as Manual") { model.selectManualProxy(proxy.id) }
-                            .buttonStyle(.link)
+                            .appAction(.link, size: .small)
                     }
 
                     if model.state?.mode == .manual,
@@ -275,23 +263,6 @@ private struct ProxyPoolRow: View {
         }
         .padding(.horizontal, 5)
         .background(isExpanded ? Color.primary.opacity(0.025) : Color.clear)
-    }
-
-    @ViewBuilder
-    private var healthSymbol: some View {
-        if !currentProxy.enabled {
-            Image(systemName: "circle")
-                .foregroundStyle(.tertiary)
-                .accessibilityLabel("Disabled")
-        } else if let health = currentProxy.health {
-            Image(systemName: health.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(health.ok ? Color.green : Color.orange)
-                .accessibilityLabel(health.ok ? "Last test passed" : "Last test failed")
-        } else {
-            Image(systemName: "questionmark.circle")
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Not tested")
-        }
     }
 
     private var proxyScheme: String {
