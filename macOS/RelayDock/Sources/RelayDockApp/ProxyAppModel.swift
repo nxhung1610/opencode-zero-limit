@@ -114,6 +114,16 @@ final class ProxyAppModel: ObservableObject {
         }
     }
 
+    /// The opt-in direct fallback — saved policy, read live by Edge.
+    func setDirectFallback(_ enabled: Bool) {
+        do {
+            state = try store.setDirectFallback(enabled)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func removeProxy(_ id: String) {
         do {
             state = try store.remove(id)

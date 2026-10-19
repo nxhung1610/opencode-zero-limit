@@ -52,21 +52,40 @@ enum RoutingStatePresentation {
         case .manual:
             guard validManual(in: state) != nil else {
                 return Consequence(
-                    text: "Manual selection missing or invalid. Routing fails closed; no direct fallback.",
+                    text: state.directFallback
+                        ? "Manual selection missing or invalid. Until it is fixed, Edge connects directly."
+                        : "Manual selection missing or invalid. Routing fails closed; no direct fallback.",
                     isWarning: true
                 )
             }
             return Consequence(
-                text: "If this proxy fails, routing fails closed — no direct fallback.",
+                text: state.directFallback
+                    ? "If this proxy fails, Edge falls back to a direct connection."
+                    : "If this proxy fails, routing fails closed — no direct fallback.",
                 isWarning: false
             )
         case .auto:
             if state.enabledProxies.isEmpty {
-                return Consequence(text: "Enable a proxy before a consumer can use Auto mode.", isWarning: true)
+                return Consequence(
+                    text: state.directFallback
+                        ? "No proxies are enabled. Edge connects directly until one is."
+                        : "Enable a proxy before a consumer can use Auto mode.",
+                    isWarning: true
+                )
             } else if state.validEnabledProxies.isEmpty {
-                return Consequence(text: "No enabled proxy has a valid supported URL.", isWarning: true)
+                return Consequence(
+                    text: state.directFallback
+                        ? "No enabled proxy has a valid URL. Edge connects directly until one does."
+                        : "No enabled proxy has a valid supported URL.",
+                    isWarning: true
+                )
             } else if state.autoEligibleProxies.isEmpty {
-                return Consequence(text: "All enabled proxies have a failed last check. Auto will fail closed.", isWarning: true)
+                return Consequence(
+                    text: state.directFallback
+                        ? "All enabled proxies have a failed last check. Edge falls back to direct connections."
+                        : "All enabled proxies have a failed last check. Auto will fail closed.",
+                    isWarning: true
+                )
             }
             return Consequence(text: "Unchecked proxies may be eligible.", isWarning: false)
         }

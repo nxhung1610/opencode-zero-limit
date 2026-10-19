@@ -72,4 +72,74 @@ struct EdgeDaemonTests {
         #expect(tunnels.first { $0.clientPort == 40_001 }?.label == nil)
         #expect(tunnels.first { $0.clientPort == 40_002 }?.label == "proxy-a.example:8080")
     }
+
+    // MARK: - Direct fallback (opt-in)
+
+    private func makeFallbackFixture() throws -> (directory: URL, store: ProxyStore, daemon: EdgeDaemon) {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-fallback-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ProxyStore(configDirectory: directory)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999, token: "test"),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        return (directory, store, daemon)
+    }
+
+    /// The pool's opt-in direct fallback turns "nothing usable" from a
+    /// refusal into a labeled direct answer; without the setting the same
+    /// state stays fail-closed.
+    @Test func directFallbackAnswersWhenNoUpstreamIsUsable() async throws {
+        let (directory, store, daemon) = try makeFallbackFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try store.setMode(.auto, manualId: nil)
+
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("an empty pool must refuse while direct fallback is off")
+            return
+        }
+
+        _ = try store.setDirectFallback(true)
+        #expect(await daemon.directFallbackEnabled())
+        guard case .directFallback(let reason) = await daemon.decideRoute() else {
+            Issue.record("direct fallback must answer when no upstream is usable")
+            return
+        }
+        #expect(!reason.isEmpty)
+
+        _ = try store.setDirectFallback(false)
+        #expect(!(await daemon.directFallbackEnabled()))
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("turning the fallback off must restore fail-closed")
+            return
+        }
+    }
+
+    /// The setting is global consent, not a mode-specific patch: a manual
+    /// selection gap falls back too.
+    @Test func directFallbackCoversAManualSelectionGap() async throws {
+        let (directory, store, daemon) = try makeFallbackFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try store.save(ProxyState(mode: .manual, manualId: nil, directFallback: true))
+
+        guard case .directFallback(let reason) = await daemon.decideRoute() else {
+            Issue.record("a manual gap with the fallback on must answer direct")
+            return
+        }
+        #expect(reason.contains("manual"))
+    }
+
+    /// One more tunnel served by fallback is visible in the status counters.
+    @Test func directFallbackCountsSurfaceInStatus() async throws {
+        let (directory, _, daemon) = try makeFallbackFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await daemon.noteDirectFallback(reason: "no proxy in the pool is usable")
+        await daemon.noteDirectFallback(reason: "the provider is cooling down")
+
+        let status = await daemon.status()
+        #expect(status.counters.directFallbacks == 2)
+    }
 }

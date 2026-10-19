@@ -49,6 +49,10 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
         /// silent until the client gave up. Added after protocol 1 shipped;
         /// decoding tolerates its absence in older Edge binaries.
         public var streamFailures: Int
+        /// Tunnels dialed directly by the pool's opt-in direct fallback —
+        /// traffic that never went through a proxy. Added after protocol 1
+        /// shipped; decoding tolerates its absence in older Edge binaries.
+        public var directFallbacks: Int
         public var tunnelsTotal: Int
         public var tunnelsActive: Int
 
@@ -57,6 +61,7 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
             switches: Int = 0,
             dialFailures: Int = 0,
             streamFailures: Int = 0,
+            directFallbacks: Int = 0,
             tunnelsTotal: Int = 0,
             tunnelsActive: Int = 0
         ) {
@@ -64,6 +69,7 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
             self.switches = switches
             self.dialFailures = dialFailures
             self.streamFailures = streamFailures
+            self.directFallbacks = directFallbacks
             self.tunnelsTotal = tunnelsTotal
             self.tunnelsActive = tunnelsActive
         }
@@ -74,6 +80,7 @@ public struct EdgeStatusResponse: Codable, Equatable, Sendable {
             switches = try container.decode(Int.self, forKey: .switches)
             dialFailures = try container.decode(Int.self, forKey: .dialFailures)
             streamFailures = try container.decodeIfPresent(Int.self, forKey: .streamFailures) ?? 0
+            directFallbacks = try container.decodeIfPresent(Int.self, forKey: .directFallbacks) ?? 0
             tunnelsTotal = try container.decode(Int.self, forKey: .tunnelsTotal)
             tunnelsActive = try container.decode(Int.self, forKey: .tunnelsActive)
         }

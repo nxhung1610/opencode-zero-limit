@@ -42,12 +42,21 @@ struct EdgeRelayPolicyTests {
         let old = #"{"resolutions":1,"switches":2,"dialFailures":3,"tunnelsTotal":4,"tunnelsActive":5}"#
         let decoded = try JSONDecoder().decode(EdgeStatusResponse.Counters.self, from: Data(old.utf8))
         #expect(decoded.streamFailures == 0)
+        #expect(decoded.directFallbacks == 0)
         #expect(decoded.resolutions == 1)
         #expect(decoded.tunnelsActive == 5)
 
-        let current = #"{"resolutions":1,"switches":2,"dialFailures":3,"streamFailures":9,"tunnelsTotal":4,"tunnelsActive":5}"#
+        let current = #"{"resolutions":1,"switches":2,"dialFailures":3,"streamFailures":9,"directFallbacks":4,"tunnelsTotal":4,"tunnelsActive":5}"#
         let decodedCurrent = try JSONDecoder().decode(EdgeStatusResponse.Counters.self, from: Data(current.utf8))
         #expect(decodedCurrent.streamFailures == 9)
+        #expect(decodedCurrent.directFallbacks == 4)
+    }
+
+    /// The fallback label is the honesty contract of the opt-in fallback:
+    /// status consumers rely on this exact string to separate proxied
+    /// tunnels from direct ones.
+    @Test func directFallbackLabelIsStable() {
+        #expect(EdgeClientConnection.directFallbackLabel == "direct (fallback)")
     }
 
     @Test func tunnelFailuresCountAndRecordEvenWithoutState() async throws {

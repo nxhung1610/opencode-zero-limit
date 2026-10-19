@@ -80,6 +80,23 @@ struct ProxyAppModelTests {
         #expect(!model.isManualChooserPresented)
     }
 
+    @Test @MainActor func directFallbackTogglePersistsThroughTheStore() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = ProxyAppModel(store: store)
+        model.load()
+
+        #expect(model.state?.directFallback == false)
+
+        model.setDirectFallback(true)
+        #expect(model.state?.directFallback == true)
+        #expect(try store.load().directFallback)
+
+        model.setDirectFallback(false)
+        #expect(model.state?.directFallback == false)
+        #expect(try store.load().directFallback == false)
+    }
+
     @Test @MainActor func testAllSharesTheEdgeScriptCacheOnDisk() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }

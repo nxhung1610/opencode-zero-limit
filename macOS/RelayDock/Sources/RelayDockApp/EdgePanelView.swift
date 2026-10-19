@@ -134,6 +134,12 @@ struct EdgePanelView: View {
                     .foregroundStyle(.orange)
             }
         }
+        if status.counters.directFallbacks > 0 {
+            LabeledContent("Direct fallbacks") {
+                Text("\(status.counters.directFallbacks) tunnel\(status.counters.directFallbacks == 1 ? "" : "s") connected directly")
+                    .foregroundStyle(.orange)
+            }
+        }
         if let lastError = status.lastErrors.last {
             LabeledContent("Last error") {
                 Text(lastError)
