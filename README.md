@@ -24,6 +24,7 @@ Requires macOS 14+ and Swift 6:
 ```sh
 swift test --package-path macOS/RelayDock
 scripts/build-macos-app.sh
+scripts/build-dmg.sh              # RelayDock.app → build/RelayDock.dmg (drag-to-Applications image)
 open build/RelayDock.app
 scripts/build-launcher.sh         # PATH wrapper + Edge daemon binaries → build/relaydock-launch, build/relaydock-edge
 scripts/launcher-sandbox-test.sh  # hermetic end-to-end: stub command, fake provider/proxies, real launcher + Edge
@@ -35,10 +36,11 @@ The app is currently unsigned and not notarized for public distribution.
 ## Continuous delivery
 
 `ci.yml` tests every pull request and push to `main` (test suite + app bundle validation).
-`cd.yml` packages the same commits into downloadable build artifacts: `RelayDock.app.zip`, the
-`relaydock-edge` and `relaydock-launch` binaries, and a `SHA256SUMS` file — as a workflow artifact
-(30 days) on every run. Pushing a `v*` tag additionally publishes the same files as a GitHub
-Release. Packaged builds are unsigned, exactly like local `scripts/build-*.sh` ones.
+`cd.yml` packages the same commits into downloadable build artifacts: `RelayDock.dmg` (plus the
+bundled `RelayDock.app.zip`), the `relaydock-edge` and `relaydock-launch` binaries, and a
+`SHA256SUMS` file — as a workflow artifact (30 days) on every run. Pushing a `v*` tag additionally
+publishes the same files as a GitHub Release. Packaged builds are unsigned, exactly like local
+`scripts/build-*.sh` ones.
 
 ## Core library
 
