@@ -3,8 +3,9 @@ import Foundation
 
 /// The per-user launchd agent that supervises RelayDock Edge (P2 lifecycle).
 ///
-/// The installer writes `~/Library/LaunchAgents/<label>.plist` — its contents
-/// come from `relaydock-edge agent-plist` — and bootstraps it. Once loaded,
+/// The installer (`relaydock-edge install`, which `scripts/opencode-wrapper.sh`
+/// delegates to) writes `~/Library/LaunchAgents/<label>.plist` and bootstraps
+/// it. Once loaded,
 /// launchd starts Edge at login (`RunAtLoad`) and restarts it after abnormal
 /// exits (`KeepAlive`/`SuccessfulExit`), so consumers stop racing cold starts:
 /// the launcher kickstarts the job when its ping fails, and
@@ -104,7 +105,16 @@ public enum EdgeLaunchAgent {
         if isLoaded(environment: environment) {
             return runLaunchctl(["kickstart", "-k", launchdServiceTarget], environment: environment) == 0
         }
-        return runLaunchctl(
+        return bootstrap(environment: environment)
+    }
+
+    /// Loads the job from the installed plist. The installer's path: the
+    /// plist was just written, so there is nothing loaded to kickstart.
+    @discardableResult
+    public static func bootstrap(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        runLaunchctl(
             ["bootstrap", "gui/\(getuid())", plistURL(environment: environment).path],
             environment: environment
         ) == 0

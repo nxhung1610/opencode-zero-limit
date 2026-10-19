@@ -19,6 +19,10 @@ struct EdgeMain {
             runStatus(environment: environment)
         case "agent-plist":
             runAgentPlist(environment: environment)
+        case "install":
+            runInstall(arguments: Array(arguments.dropFirst()), environment: environment)
+        case "uninstall":
+            runUninstall(environment: environment)
         case "--help", "-h", "help":
             print(usageText)
             exit(0)
@@ -29,7 +33,7 @@ struct EdgeMain {
     }
 
     static let usageText = """
-    Usage: relaydock-edge [run|init|stop|status|agent-plist]
+    Usage: relaydock-edge [run|init|stop|status|agent-plist|install|uninstall]
 
       run          Run the daemon (default); reads edge.json next to proxies.json.
       init         Write edge.json with a free port and a fresh token (installer).
@@ -37,6 +41,11 @@ struct EdgeMain {
                    install, otherwise asks the running instance to shut down.
       status       Print the live status JSON (exit 1 when not running).
       agent-plist  Print the launchd agent plist for this install (installer).
+      install      Install the PATH wrapper for this user (installer). The
+                   launcher binary defaults to a sibling `relaydock-launch`;
+                   override with --launcher <path>.
+      uninstall    Remove the wrapper: launchd agent, both binaries, the
+                   `opencode` symlink, and edge.json. User data stays.
     """
 
     // MARK: - Daemon
@@ -120,29 +129,46 @@ struct EdgeMain {
 
     // MARK: - Init
 
-    static func runInit(environment: [String: String]) -> Never {
+    /// What `ensureInitialized` produced. Shared by the `init` command and the
+    /// installer, which must not shell out to itself for this.
+    enum InitOutcome {
+        case kept(configURL: URL, config: EdgeConfigFile)
+        case wrote(configURL: URL, config: EdgeConfigFile)
+        case failure(String)
+    }
+
+    /// Loads `edge.json`, or writes a fresh one with a free loopback port and
+    /// a token. On upgrades the existing file is kept — the port never
+    /// renumbers once consumers hold it.
+    static func ensureInitialized(environment: [String: String]) -> InitOutcome {
         let configURL = EdgeConfigFile.fileURL(environment: environment)
         if let existing = EdgeConfigFile.load(from: configURL) {
-            print("edge.json already configured (port \(existing.port)); keeping it.")
-            exit(0)
+            return .kept(configURL: configURL, config: existing)
         }
         guard let port = EdgePortProbe.firstFreePort(startingAt: EdgeConfigFile.defaultPort, attempts: 20) else {
-            FileHandle.standardError.write(Data(
-                "relaydock-edge: no free loopback port found near \(EdgeConfigFile.defaultPort).\n".utf8
-            ))
-            exit(1)
+            return .failure("relaydock-edge: no free loopback port found near \(EdgeConfigFile.defaultPort).")
         }
         let config = EdgeConfigFile(port: port, token: EdgeConfigFile.makeRandomToken())
         do {
             try config.save(to: configURL)
         } catch {
-            FileHandle.standardError.write(Data(
-                "relaydock-edge: could not write \(configURL.path): \(error.localizedDescription)\n".utf8
-            ))
+            return .failure("relaydock-edge: could not write \(configURL.path): \(error.localizedDescription)")
+        }
+        return .wrote(configURL: configURL, config: config)
+    }
+
+    static func runInit(environment: [String: String]) -> Never {
+        switch ensureInitialized(environment: environment) {
+        case .kept(_, let config):
+            print("edge.json already configured (port \(config.port)); keeping it.")
+            exit(0)
+        case .wrote(let configURL, let config):
+            print("Wrote \(configURL.path) — port \(config.port)")
+            exit(0)
+        case .failure(let message):
+            FileHandle.standardError.write(Data((message + "\n").utf8))
             exit(1)
         }
-        print("Wrote \(configURL.path) — port \(port)")
-        exit(0)
     }
 
     // MARK: - Stop
@@ -204,8 +230,11 @@ struct EdgeMain {
     /// foreign process. With sockets declared, `RunAtLoad` stays false — Edge
     /// exists only while it has traffic. Without an `edge.json` (a hand-rolled
     /// setup that skipped `init`), the classic RunAtLoad-only job is emitted.
-    static func agentPlist(environment: [String: String]) -> [String: Any]? {
-        guard let executable = ownExecutablePath() else { return nil }
+    /// `executablePath` bakes the binary the agent runs: the installer passes
+    /// the *installed* path, while the `agent-plist` command defaults to this
+    /// process's own executable.
+    static func agentPlist(environment: [String: String], executablePath: String? = nil) -> [String: Any]? {
+        guard let executable = executablePath ?? ownExecutablePath() else { return nil }
         let configDirectory = EdgeConfigFile.configDirectory(environment: environment)
         let agentLog = configDirectory.appending(path: "edge-agent.log").path
         var plist: [String: Any] = [
@@ -280,6 +309,54 @@ struct EdgeMain {
         let bytes = UnsafeBufferPointer(start: resolved, count: strlen(resolved))
             .map { UInt8(bitPattern: $0) }
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    // MARK: - Install / uninstall
+
+    /// `relaydock-edge install [--launcher <path>]`: installs the PATH wrapper
+    /// for this user. The Edge binary is this process's own executable; the
+    /// launcher defaults to a sibling named `relaydock-launch` — true both in
+    /// `build/` and in the app bundle's Resources.
+    static func runInstall(arguments: [String], environment: [String: String]) -> Never {
+        var launcherPath: String?
+        var index = 0
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--launcher":
+                guard index + 1 < arguments.count else {
+                    FileHandle.standardError.write(Data("relaydock-edge: --launcher needs a path.\n".utf8))
+                    exit(2)
+                }
+                launcherPath = arguments[index + 1]
+                index += 2
+            case let unknown:
+                FileHandle.standardError.write(Data(
+                    "relaydock-edge: unknown argument '\(unknown)'.\n\(usageText)\n".utf8
+                ))
+                exit(2)
+            }
+        }
+        guard let own = ownExecutablePath() else {
+            FileHandle.standardError.write(Data("relaydock-edge: could not locate this executable.\n".utf8))
+            exit(1)
+        }
+        let sourceEdge = URL(fileURLWithPath: own)
+        let sourceLauncher = launcherPath.map { URL(fileURLWithPath: $0) }
+            ?? sourceEdge.deletingLastPathComponent().appending(path: "relaydock-launch")
+        guard FileManager.default.isExecutableFile(atPath: sourceLauncher.path) else {
+            FileHandle.standardError.write(Data(
+                "relaydock-edge: launcher binary not found at \(sourceLauncher.path); pass --launcher.\n".utf8
+            ))
+            exit(1)
+        }
+        exit(EdgeInstaller(environment: environment).install(sourceLauncher: sourceLauncher, sourceEdge: sourceEdge))
+    }
+
+    /// `relaydock-edge uninstall`: removes the PATH wrapper, the launchd
+    /// agent, both installed binaries, and edge.json. User data — the proxy
+    /// pool and Edge's script cache — stays.
+    static func runUninstall(environment: [String: String]) -> Never {
+        exit(EdgeInstaller(environment: environment).uninstall())
     }
 
     // MARK: - Status
