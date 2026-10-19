@@ -140,7 +140,7 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 ## Shared interaction and states
 
 - The top tab row contains **Routing** and **Proxy Pool** only—no filler About/Updates tab.
-- **Routing:** Off explicitly permits direct routing; Manual requires one enabled, valid proxy; Auto shows enabled/eligible counts and fails closed when none is usable.
+- **Routing:** Off explicitly permits direct routing; Manual requires one enabled, valid proxy; Auto shows enabled/eligible counts and fails closed when none is usable. The opt-in **Direct fallback** toggle (Manual/Auto only; off by default) turns that failure into a labeled, counted direct connection instead.
 - **Proxy Pool:** `Test All` checks enabled entries, `+ Import` opens a multiline import sheet, and each proxy shows text health state plus enabled state.
 - Failed checks remain endpoint-check results, not proof about live OpenCode traffic; only Edge's tunnel accounting speaks to real traffic, and only to the traffic that routes through Edge. Unknown health is distinct from failed health.
 - If Manual has no valid selection, keep the previous policy and prompt for a proxy. Never silently switch to Off.
@@ -149,7 +149,7 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 
 ## Implemented additions (P2)
 
-- **Routing tab — RelayDock Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar popover is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
+- **Routing tab — RelayDock Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, a direct-fallback count when nonzero, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar popover is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
 - **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers. Checks probe the proxy each entry is currently serving — live upstream, pinned upstream, or the resolution its script cache holds — and never run a script, so `Test All` can neither rotate an exit nor surface the provider's change cooldown; an entry with nothing resolved yet is reported as skipped, not failed. When Edge is unreachable the check falls back in-process, follows the same probe rule, and the pool header says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
 - **Menu bar — Edge line:** `Edge running · <upstream label | Direct | No upstream> · <N active>`, showing Edge's own mode only when it diverges from the saved one; `Edge not running` when the daemon does not answer (tooltip: starts on demand at the next wrapped launch). Hidden entirely when Edge is not configured.
 - **Honesty line (window footer + menu bar):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."

@@ -85,6 +85,7 @@ private extension UIFixturesTests {
                 switches: 0,
                 dialFailures: 84,
                 streamFailures: 17,
+                directFallbacks: 2,
                 tunnelsTotal: 35,
                 tunnelsActive: 1
             ),
@@ -239,6 +240,12 @@ private extension UIFixturesTests {
                 content: window(try makeModel(mode: .auto, proxies: failedPool))
             ),
             FixtureScenario(
+                name: "routing-auto-fallback",
+                size: windowSize,
+                schemes: bothSchemes,
+                content: window(try makeModel(mode: .auto, proxies: failedPool, directFallback: true))
+            ),
+            FixtureScenario(
                 name: "routing-off",
                 size: windowSize,
                 schemes: bothSchemes,
@@ -351,6 +358,12 @@ private extension UIFixturesTests {
                 size: nil,
                 schemes: [.dark],
                 content: panel(try makeModel(mode: .auto, proxies: failedPool))
+            ),
+            FixtureScenario(
+                name: "panel-auto-fallback",
+                size: nil,
+                schemes: [.dark],
+                content: panel(try makeModel(mode: .auto, proxies: failedPool, directFallback: true))
             ),
             FixtureScenario(
                 name: "panel-empty",
@@ -483,13 +496,14 @@ private extension UIFixturesTests {
         mode: ProxyMode,
         manualId: String? = nil,
         proxies: [ProxyEntry],
-        tab: ProxyAppTab = .routing
+        tab: ProxyAppTab = .routing,
+        directFallback: Bool = false
     ) throws -> ProxyAppModel {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-ui-fixtures", directoryHint: .isDirectory)
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         let store = ProxyStore(configDirectory: directory)
-        try store.save(ProxyState(mode: mode, manualId: manualId, proxies: proxies))
+        try store.save(ProxyState(mode: mode, manualId: manualId, proxies: proxies, directFallback: directFallback))
         let model = ProxyAppModel(store: store)
         model.load()
         model.selectedTab = tab

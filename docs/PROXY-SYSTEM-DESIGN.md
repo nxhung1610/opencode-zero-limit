@@ -48,7 +48,9 @@ re-encountering E1–E4.
 2. **One owner** of script execution and caching; provider rate limits are handled in one place.
 3. Health that **self-heals**: real connectivity failures mark failed with backoff re-checks;
    provider throttles defer, never mark failed.
-4. Fail-closed stays: no silent direct routing when the policy cannot be satisfied.
+4. Fail-closed stays: no silent direct routing when the policy cannot be satisfied. (One explicit,
+   opt-in exception shipped later: the pool’s **Direct fallback** setting — labeled and counted,
+   never silent; see §4.3 and §7.)
 5. Keep the product stance: opt-in wrapper, manual service activation, no OpenCode lifecycle
    control, existing `proxies.json` path and permissions, `RELAYDOCK_CONFIG_DIR` honored.
 6. Reduce, not add, moving parts per process: the wrapper becomes thin.
@@ -148,10 +150,10 @@ by Edge instead of at spawn time.
 | Situation | Behavior |
 |---|---|
 | Edge unreachable, wrapper installed | Launcher tries to start Edge (on-demand spawn; launchd kickstart when the agent exists), then refuses to exec with exit 1 + hint. Never “silently direct”. |
-| Manual/Auto, no usable entry at resolve time | New CONNECTs → `502` + reason; existing tunnels continue; status lists the reason. |
-| Resolve error reaches a wrapped terminal launch | Not blocked at launch: the TUI opens and the first request fails closed (502 + reason). Deliberate — provider timing never blocks the terminal; warm-up makes this rare. |
+| Manual/Auto, no usable entry at resolve time | New CONNECTs → `502` + reason; existing tunnels continue; status lists the reason. With the pool’s opt-in **Direct fallback** enabled, new CONNECTs dial direct instead — the tunnel is labeled `direct (fallback)`, counted in `directFallbacks`, and logged; pinned listeners never take this path. |
+| Resolve error reaches a wrapped terminal launch | Not blocked at launch: the TUI opens and the first request fails closed (502 + reason), or dials direct when the pool opts into Direct fallback. Deliberate — provider timing never blocks the terminal; warm-up makes this rare. |
 | Mode switched to Off while processes hold Edge env | Edge forwards direct (transparent); fresh launches get no env at all. |
-| Upstream dies mid-tunnel | Tunnel drops; the next dial re-resolves single-flight and is retried once internally; 502 only when nothing is usable. A death or zero-byte stall on an established tunnel also counts as a strike (first-ender classification: client-induced cancels never strike), drops the script snapshot, re-resolves immediately when a mode is active, and raises `streamFailures`. The dead request itself is never retried — bytes were already in flight. |
+| Upstream dies mid-tunnel | Tunnel drops; the next dial re-resolves single-flight and is retried once internally; 502 only when nothing is usable (or a labeled direct fallback when the pool enables one). A death or zero-byte stall on an established tunnel also counts as a strike (first-ender classification: client-induced cancels never strike), drops the script snapshot, re-resolves immediately when a mode is active, and raises `streamFailures`. The dead request itself is never retried — bytes were already in flight. |
 | Refusal inside a provider cooldown | The `502` carries `Retry-After: <whole seconds>` built from the pending `retryAt`; the absence of the header means "retry whenever". |
 | Edge crash | The launchd KeepAlive agent restarts it within its throttle (`SuccessfulExit: false` — a clean loser-exit never respawn-loops); without the agent, the next launch/app contact respawns it. |
 | Edge cannot bind its port | Edge exits loudly (boot error in `edge.log`); the launcher refuses with a port-conflict/reinstall hint. Ports never renumber silently once consumers hold the env. |
@@ -276,6 +278,15 @@ by Edge instead of at spawn time.
   warns and steps aside; only the primary port owns the loud boot failure. Old binaries and config
   files decode the new fields tolerantly. Tests: unit suites plus sandbox scenarios for the
   activated serve path and a pinned listener.
+
+- **P3.1 — Opt-in Direct fallback (implemented):** `ProxyState` gains `directFallback` (default
+  off, decoded tolerantly). When enabled, a route decision with no usable upstream answers
+  `.directFallback` instead of `.refuse`, and the connection handler dials the target directly
+  with tunnel label `direct (fallback)` — also counted in the additive `directFallbacks` status
+  counter and logged. Dial-retry exhaustion takes the same path, except for pinned listeners,
+  which always fail closed. Fail-closed remains the default; the launcher never routes direct on
+  its own. The Routing tab shows the toggle (Manual/Auto), and the shared consequence line reads
+  the setting.
 
 ## 8. Alternatives considered
 

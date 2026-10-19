@@ -18,6 +18,9 @@ struct RoutingView: View {
                 }
 
                 Section {
+                    if state.mode != .off {
+                        directFallbackToggle
+                    }
                     LabeledContent("Policy", value: "Saved locally")
                 }
 
@@ -40,7 +43,8 @@ struct RoutingView: View {
     // MARK: - Routing state
 
     /// Prominent statement of where routing stands: mode, pool numbers, and
-    /// the consequence that matters — fail closed, never direct fallback.
+    /// the consequence that matters — fail closed, or the labeled direct
+    /// fallback the pool opted into.
     private func routingState(_ state: ProxyState) -> some View {
         let consequence = RoutingStatePresentation.consequence(for: state)
         return HStack(alignment: .top, spacing: 12) {
@@ -61,6 +65,29 @@ struct RoutingView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Direct fallback
+
+    /// The opt-in escape hatch, stated plainly: direct means unverified, so
+    /// the row says the consequence instead of hiding it.
+    private var directFallbackToggle: some View {
+        Toggle(
+            isOn: Binding(
+                get: { model.state?.directFallback ?? false },
+                set: { model.setDirectFallback($0) }
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Direct fallback")
+                Text("If no proxy is usable, connect directly (unverified) instead of failing closed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.regular)
     }
 
     // MARK: - Manual
@@ -104,7 +131,9 @@ struct RoutingView: View {
         if let selected = state.proxies.first(where: { $0.id == state.manualId }),
            let health = selected.health, !health.ok {
             LabeledContent("Last test") {
-                Text("Failed — Manual remains configured; no direct fallback.")
+                Text(state.directFallback
+                    ? "Failed — Manual remains configured; Edge falls back to a direct connection."
+                    : "Failed — Manual remains configured; no direct fallback.")
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }

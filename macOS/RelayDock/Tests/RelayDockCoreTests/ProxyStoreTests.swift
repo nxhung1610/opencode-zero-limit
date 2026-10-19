@@ -561,6 +561,31 @@ struct ProxyStoreTests {
         #expect(kept.proxies.first(where: { $0.id == entryB.id })?.label == "B (kept)")
     }
 
+    @Test func directFallbackDefaultsOffRoundTripsAndDecodesLegacyFiles() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(try store.load().directFallback == false)
+
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let enabled = try store.setDirectFallback(true)
+        #expect(enabled.directFallback)
+        #expect(enabled.proxies == imported.proxies)
+        #expect(try store.load().directFallback)
+
+        let disabled = try store.setDirectFallback(false)
+        #expect(!disabled.directFallback)
+        #expect(try store.load() == disabled)
+
+        // Files written before the setting existed must decode with the
+        // fallback off; a snake_case spelling is honored too.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"mode":"auto","proxies":[]}"#.utf8).write(to: store.fileURL)
+        #expect(try store.load().directFallback == false)
+        try Data(#"{"mode":"auto","proxies":[],"direct_fallback":true}"#.utf8).write(to: store.fileURL)
+        #expect(try store.load().directFallback == true)
+    }
+
     private func makeStore() -> (URL, ProxyStore) {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         return (directory, ProxyStore(configDirectory: directory))

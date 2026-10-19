@@ -90,4 +90,19 @@ struct EdgeDaemonPinnedTests {
             return
         }
     }
+
+    /// A pinned listener is an explicit one-account binding: even with the
+    /// pool's direct fallback on, a broken pin refuses — never direct.
+    @Test func pinnedListenersNeverFallBackToDirect() async throws {
+        let (directory, store, daemon) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try store.importProxies("http://proxy-a.example:8080")
+        _ = try store.setDirectFallback(true)
+
+        guard case .refuse(let reason, _) = await daemon.decideRoute(pinning: "px_missing") else {
+            Issue.record("a pinned listener must refuse — never a direct fallback")
+            return
+        }
+        #expect(reason.contains("no longer in the pool"))
+    }
 }

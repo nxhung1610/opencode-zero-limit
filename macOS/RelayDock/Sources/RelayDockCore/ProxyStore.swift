@@ -90,12 +90,24 @@ public struct ProxyState: Codable, Equatable, Sendable {
     public var manualId: String?
     public var proxies: [ProxyEntry]
     public var bindings: [String: String]
+    /// Opt-in routing fallback. When enabled, Edge dials the destination
+    /// directly — labeling the tunnel `direct (fallback)` and counting it —
+    /// instead of failing closed whenever no proxy in the pool is usable.
+    /// Direct traffic is not verified by Edge; the default is off.
+    public var directFallback: Bool
 
-    public init(mode: ProxyMode = .off, manualId: String? = nil, proxies: [ProxyEntry] = [], bindings: [String: String] = [:]) {
+    public init(
+        mode: ProxyMode = .off,
+        manualId: String? = nil,
+        proxies: [ProxyEntry] = [],
+        bindings: [String: String] = [:],
+        directFallback: Bool = false
+    ) {
         self.mode = mode
         self.manualId = manualId
         self.proxies = proxies
         self.bindings = bindings
+        self.directFallback = directFallback
     }
 
     public static let defaults = ProxyState()
@@ -139,6 +151,9 @@ public struct ProxyState: Codable, Equatable, Sendable {
             ?? container.decodeIfPresent(String.self, forKey: ProxyCodingKey("manual_id"))
         proxies = (try? container.decode([ProxyEntry].self, forKey: ProxyCodingKey("proxies"))) ?? []
         bindings = (try? container.decode([String: String].self, forKey: ProxyCodingKey("bindings"))) ?? [:]
+        directFallback = try container.decodeIfPresent(Bool.self, forKey: ProxyCodingKey("directFallback"))
+            ?? container.decodeIfPresent(Bool.self, forKey: ProxyCodingKey("direct_fallback"))
+            ?? false
         if let manualId, !proxies.contains(where: { $0.id == manualId }) { self.manualId = nil }
     }
 }
@@ -349,6 +364,15 @@ public struct ProxyStore: Sendable {
         }
         state.mode = mode
         state.manualId = selectedProxy?.id
+        return try save(state)
+    }
+
+    /// Sets the opt-in direct fallback. Saved like every other policy edit;
+    /// Edge reads it live from `proxies.json` on the next route decision.
+    @discardableResult
+    public func setDirectFallback(_ enabled: Bool) throws -> ProxyState {
+        var state = try load()
+        state.directFallback = enabled
         return try save(state)
     }
 

@@ -20,6 +20,10 @@ struct EdgeUpstream: Equatable, Sendable {
 
 enum EdgeRouteDecision {
     case direct
+    /// The pool's opt-in direct fallback: no proxy is usable and the state
+    /// explicitly allows direct. The relay labels the tunnel and counts it —
+    /// this is never chosen silently.
+    case directFallback(reason: String)
     case upstream(EdgeUpstream)
     case refuse(reason: String, retryAt: Double?)
 }
@@ -107,6 +111,7 @@ actor EdgeDaemon {
     private var switches = 0
     private var dialFailures = 0
     private var streamFailures = 0
+    private var directFallbacks = 0
     private var tunnelsTotal = 0
     private var lastDialFailureAt: Double = 0
     private var tunnelsActive: [UInt16: TunnelRecord] = [:]
@@ -278,9 +283,20 @@ actor EdgeDaemon {
         }
         if let upstream { return .upstream(upstream) }
         if let retryAt = throttleRetryAt, retryAt > now {
-            return .refuse(reason: pendingReason ?? "the provider is cooling down", retryAt: retryAt)
+            let reason = pendingReason ?? "the provider is cooling down"
+            if state.directFallback { return .directFallback(reason: reason) }
+            return .refuse(reason: reason, retryAt: retryAt)
         }
-        return .refuse(reason: pendingReason ?? Self.defaultRefusal(state), retryAt: nil)
+        let reason = pendingReason ?? Self.defaultRefusal(state)
+        if state.directFallback { return .directFallback(reason: reason) }
+        return .refuse(reason: reason, retryAt: nil)
+    }
+
+    /// Whether the pool's opt-in direct fallback is enabled — read live from
+    /// `proxies.json` like every other routing decision. The connection
+    /// handler consults this once its dial-retry contract runs out.
+    func directFallbackEnabled() -> Bool {
+        loadState()?.directFallback == true
     }
 
     func refusalReason(pinning entryID: String? = nil) -> String? {
@@ -579,6 +595,14 @@ actor EdgeDaemon {
             current.strikes = 0
             upstream = current
         }
+    }
+
+    /// One more tunnel served by direct fallback (its direct dial succeeded).
+    /// The counter and the log line keep the degraded route visible — this
+    /// traffic was never proxied, and status must be able to say so.
+    func noteDirectFallback(reason: String) {
+        directFallbacks += 1
+        log.warn("direct fallback: \(reason)")
     }
 
     /// An established upstream tunnel died mid-stream or stalled. The same
@@ -930,6 +954,7 @@ actor EdgeDaemon {
                 switches: switches,
                 dialFailures: dialFailures,
                 streamFailures: streamFailures,
+                directFallbacks: directFallbacks,
                 tunnelsTotal: tunnelsTotal,
                 tunnelsActive: tunnelsActive.count
             ),

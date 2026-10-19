@@ -153,13 +153,19 @@ final class EdgeClientConnection: @unchecked Sendable {
                 )
             } else {
                 let reason = await daemon.refusalReason(pinning: pinnedEntryID) ?? "no usable upstream resolved"
-                let retryAfter = await daemon.refusalRetryAfter()
-                try await sendSimple(
-                    status: 502, reason: "Bad Gateway",
-                    body: "RelayDock Edge: \(reason)",
-                    extraHeaders: Self.retryAfterHeaders(retryAfter)
-                )
+                if pinnedEntryID == nil, await daemon.directFallbackEnabled() {
+                    try await serveDirectFallback(reason: reason, host: host, port: port, clientPrelude: clientPrelude)
+                } else {
+                    let retryAfter = await daemon.refusalRetryAfter()
+                    try await sendSimple(
+                        status: 502, reason: "Bad Gateway",
+                        body: "RelayDock Edge: \(reason)",
+                        extraHeaders: Self.retryAfterHeaders(retryAfter)
+                    )
+                }
             }
+        case .directFallback(let reason):
+            try await serveDirectFallback(reason: reason, host: host, port: port, clientPrelude: clientPrelude)
         case .refuse(let reason, let retryAt):
             try await sendSimple(
                 status: 502, reason: "Bad Gateway",
@@ -231,13 +237,23 @@ final class EdgeClientConnection: @unchecked Sendable {
                 )
             } else {
                 let reason = await daemon.refusalReason(pinning: pinnedEntryID) ?? "no usable upstream resolved"
-                let retryAfter = await daemon.refusalRetryAfter()
-                try await sendSimple(
-                    status: 502, reason: "Bad Gateway",
-                    body: "RelayDock Edge: \(reason)",
-                    extraHeaders: Self.retryAfterHeaders(retryAfter)
-                )
+                if pinnedEntryID == nil, await daemon.directFallbackEnabled() {
+                    try await serveForwardFallback(
+                        reason: reason, request: request, host: host, port: port, clientPrelude: clientPrelude
+                    )
+                } else {
+                    let retryAfter = await daemon.refusalRetryAfter()
+                    try await sendSimple(
+                        status: 502, reason: "Bad Gateway",
+                        body: "RelayDock Edge: \(reason)",
+                        extraHeaders: Self.retryAfterHeaders(retryAfter)
+                    )
+                }
             }
+        case .directFallback(let reason):
+            try await serveForwardFallback(
+                reason: reason, request: request, host: host, port: port, clientPrelude: clientPrelude
+            )
         case .refuse(let reason, let retryAt):
             try await sendSimple(
                 status: 502, reason: "Bad Gateway",
@@ -275,6 +291,64 @@ final class EdgeClientConnection: @unchecked Sendable {
             return EdgeUpstreamTunnel(socket: hop.socket, initialData: Data())
         }
     }
+
+    // MARK: - Direct fallback (opt-in)
+
+    /// Opt-in direct fallback for CONNECT: the policy found no usable
+    /// upstream (`reason`) and the pool explicitly allows direct. The tunnel
+    /// carries the fallback label so Edge's accounting can never present it
+    /// as proxied; a failed direct dial still lands as the usual 502.
+    private func serveDirectFallback(reason: String, host: String, port: UInt16, clientPrelude: Data) async throws {
+        do {
+            let tunnel = try await EdgeDialer.openDirect(toHost: host, port: port)
+            await daemon.noteDirectFallback(reason: reason)
+            try await sendConnectEstablished()
+            try await relay(
+                to: tunnel,
+                clientPrelude: clientPrelude,
+                upstreamEntryID: nil,
+                label: Self.directFallbackLabel
+            )
+        } catch {
+            try await sendSimple(
+                status: 502, reason: "Bad Gateway",
+                body: "RelayDock Edge: direct fallback to \(host):\(port) failed (\(error.localizedDescription)); \(reason)"
+            )
+        }
+    }
+
+    /// Opt-in direct fallback for forwarded HTTP: dials direct and primes the
+    /// far end with the origin-form head inside the same attempt, so a failed
+    /// fallback never leaves half a request on the wire.
+    private func serveForwardFallback(
+        reason: String,
+        request: EdgeHTTPRequest,
+        host: String,
+        port: UInt16,
+        clientPrelude: Data
+    ) async throws {
+        do {
+            let tunnel = try await EdgeDialer.openDirect(toHost: host, port: port)
+            await daemon.noteDirectFallback(reason: reason)
+            try await tunnel.socket.send(request.originForwardHead(upstreamAuthorization: nil))
+            if !clientPrelude.isEmpty { try await tunnel.socket.send(clientPrelude) }
+            try await relay(
+                to: tunnel,
+                clientPrelude: Data(),
+                upstreamEntryID: nil,
+                label: Self.directFallbackLabel,
+                requestSent: true
+            )
+        } catch {
+            try await sendSimple(
+                status: 502, reason: "Bad Gateway",
+                body: "RelayDock Edge: direct fallback to \(host):\(port) failed (\(error.localizedDescription)); \(reason)"
+            )
+        }
+    }
+
+    /// The tunnel label every direct-fallback relay carries.
+    static let directFallbackLabel = "direct (fallback)"
 
     // MARK: - Dial + retry contract
 
