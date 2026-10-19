@@ -53,6 +53,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
+            --notes "Unsigned arm64 build for macOS 14+. Unzip RelayDock.app.zip, then right-click Open on first launch; relaydock-edge and relaydock-launch are the Edge daemon and PATH-wrapper binaries — see the README for install steps. Checksums in SHA256SUMS." \
             --generate-notes \
           || gh release upload "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
