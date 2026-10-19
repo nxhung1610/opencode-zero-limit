@@ -154,7 +154,12 @@ private final class Counter: @unchecked Sendable {
         await model.check(userInitiated: true)
         #expect(model.phase == .upToDate)
 
-        try await Task.sleep(for: .milliseconds(400))
+        // The reset is scheduled with a 120 ms delay; poll for it instead of
+        // racing a fixed sleep, so a loaded CI runner can't fail the test.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.phase != .idle, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         #expect(model.phase == .idle)
     }
 
