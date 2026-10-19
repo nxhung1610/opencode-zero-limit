@@ -59,4 +59,23 @@ struct ProxyScriptCacheTransferTests {
         #expect(exported[first] != nil)
         #expect(exported[second] != nil)
     }
+
+    @Test func cachedURLReadsTheResolutionFieldFromTheSnapshot() {
+        let id = "cached-url-\(UUID().uuidString)"
+        importProxyScriptCacheSnapshots([id: #"{"url":"http://127.0.0.1:9104","expiresAt":9999999999999}"#])
+        #expect(proxyScriptCachedURL(for: id) == "http://127.0.0.1:9104")
+    }
+
+    @Test func cachedURLIsNilWithoutAUsableURLField() {
+        let missing = "cached-missing-\(UUID().uuidString)"
+        let blank = "cached-blank-\(UUID().uuidString)"
+        let wrongType = "cached-type-\(UUID().uuidString)"
+        importProxyScriptCacheSnapshots([
+            blank: #"{"url":"   "}"#,
+            wrongType: #"{"url": 42}"#,
+        ])
+        #expect(proxyScriptCachedURL(for: missing) == nil)
+        #expect(proxyScriptCachedURL(for: blank) == nil)
+        #expect(proxyScriptCachedURL(for: wrongType) == nil)
+    }
 }

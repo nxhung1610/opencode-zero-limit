@@ -19,6 +19,30 @@ struct EdgeDaemonTests {
         #expect(EdgeDaemon.snapshotExpiry(snapshot: #"{"expiresAt": 999000}"#, now: now) == nil)
     }
 
+    /// A check probes the URL an entry is currently serving — live upstream,
+    /// then a pinned upstream, then its script cache — and never runs the
+    /// script, so Test All cannot rotate the exit or hit a provider cooldown.
+    @Test func checkProbesPreferLiveAndPinnedUpstreamsOverTheScriptCache() {
+        func upstream(_ id: String, _ url: String) -> EdgeUpstream {
+            EdgeUpstream(
+                entryID: id,
+                label: id,
+                url: url,
+                source: "script",
+                resolvedAt: 0,
+                expiresAt: nil,
+                refreshAt: nil,
+                strikes: 0
+            )
+        }
+        let live = upstream("live", "http://live.example:1")
+        let pinned = upstream("pinned", "http://pinned.example:2")
+        #expect(EdgeDaemon.resolvedURL(entryID: "live", upstream: live, pinned: nil, cacheURL: "http://cached.example:3") == "http://live.example:1")
+        #expect(EdgeDaemon.resolvedURL(entryID: "pinned", upstream: live, pinned: pinned, cacheURL: "http://cached.example:3") == "http://pinned.example:2")
+        #expect(EdgeDaemon.resolvedURL(entryID: "idle", upstream: live, pinned: nil, cacheURL: "http://cached.example:3") == "http://cached.example:3")
+        #expect(EdgeDaemon.resolvedURL(entryID: "idle", upstream: nil, pinned: nil, cacheURL: nil) == nil)
+    }
+
     /// A direct tunnel (its relay call passes `label: nil`) must not inherit
     /// the last resolved upstream's label; an upstream tunnel keeps exactly
     /// the label it dialed with.

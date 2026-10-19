@@ -120,16 +120,23 @@ by Edge instead of at spawn time.
 
 - Edge owns periodic checks for the active entry (default every 10 min) and backoff re-checks for
   entries with a failed last check (5 → 15 → 60 min cap); a success clears failure.
+- Checks probe, they never resolve: a script entry is checked at the URL it is currently serving
+  (the live upstream, a pinned upstream, or the resolution its script cache holds). Pressing
+  `Test All` can therefore never rotate the exit or spend the provider’s change cooldown — that
+  budget belongs to routing resolutions (launch, expiry, death recovery), not to checks. With
+  nothing resolved yet there is nothing to dial: the check is **deferred** ("no resolved proxy
+  yet") and the entry keeps its last health instead of borrowing a script error as a failure.
 - Classification: TCP/TLS/HTTP failure through the proxy → **failed** (real connectivity fact);
-  script error / provider throttle → **deferred** with `retryAt`; neither hijacks the other.
+  nothing to probe → **deferred** with `retryAt`; neither hijacks the other.
 - A tunnel that dies mid-stream or stalls (request bytes flowed, no response byte for 30 s, the
   client gives up) schedules a near-term re-check (≤30 s) through a fresh endpoint, so a zombie
   provider cannot hide behind an open-but-silent tunnel.
 - The app’s `Test All` delegates to `GET /__relaydock/check?scope=all` whenever `edge.json` exists
-  and Edge answers; deferred results are surfaced, not recorded. The app falls back to its
-  in-process path only when Edge is not configured or unreachable (degraded mode; the pool view
-  says which route ran). Checks are diagnostics, not routing: Edge answers `/check` in Off mode
-  too, while the periodic scheduler still skips Off.
+  and Edge answers; skipped (deferred) results are surfaced as a plain message, not recorded. The
+  app falls back to its in-process path only when Edge is not configured or unreachable (degraded
+  mode; the pool view says which route ran), and that path follows the same probe rule — a script
+  entry with nothing resolved keeps its last health. Checks are diagnostics, not routing: Edge
+  answers `/check` in Off mode too, while the periodic scheduler still skips Off.
 - **Persistence discipline:** `proxies.json` stays single-writer (the app, always — P1 and beyond;
   Edge reports check results, the app persists them). Edge’s live health lives in Edge state and
   the status API; Auto eligibility uses that live view, not the file’s last snapshot. Reads
@@ -220,7 +227,7 @@ by Edge instead of at spawn time.
 |---|---|---|
 | Terminal `opencode` launch | per-launch resolved endpoint in env; dies in ~30 min | constant env; routing line reports mode + warmed upstream (or “resolves on first request”); no launch ever blocks on provider timing |
 | `opencode serve --service` | env freezes an endpoint for days; stop+start per rotation | activated once; survives rotations; visible in status with tunnel attribution |
-| RelayDock app Test | resolves scripts itself → rate-limit collisions | P1: shares Edge’s script cache around checks; P2: fully delegated to Edge (`/check`); throttles are `deferred`, not failed |
+| RelayDock app Test | resolves scripts itself → rate-limit collisions | P1: shares Edge’s script cache around checks; P2: fully delegated to Edge (`/check`), which probes the current resolution and never runs the script — Test All cannot rotate or trip the provider cooldown; nothing to probe is `deferred`, never failed |
 | Library consumers (`RelayDockCore`) | unchanged API (`selectForSpawn`, env helpers) | unchanged; Edge is the new first-party implementation of that pattern |
 
 ## 7. Migration phases

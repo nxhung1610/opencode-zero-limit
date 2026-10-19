@@ -357,7 +357,7 @@ public struct ProxyStore: Sendable {
         let initialState = try load()
         let entries = initialState.proxies.filter(\.enabled)
         let fingerprints = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.checkFingerprint) })
-        let results = await withTaskGroup(of: (String, ProxyHealth).self) { group in
+        let results = await withTaskGroup(of: (String, ProxyHealth?).self) { group in
             var iterator = entries.makeIterator()
             for _ in 0..<min(Self.maxConcurrentHealthChecks, entries.count) {
                 guard let entry = iterator.next() else { break }
@@ -365,7 +365,7 @@ public struct ProxyStore: Sendable {
             }
             var checked: [String: ProxyHealth] = [:]
             while let (id, health) = await group.next() {
-                checked[id] = health
+                if let health { checked[id] = health }
                 if let entry = iterator.next() {
                     group.addTask { await self.checkEntry(entry) }
                 }
@@ -413,24 +413,19 @@ public struct ProxyStore: Sendable {
         return route.proxyURL
     }
 
-    /// Runs one health check. Custom scripts resolve to a concrete URL first
-    /// (through the same per-entry memory cache as spawn resolution);
-    /// a script failure is recorded as a failed check.
-    private func checkEntry(_ entry: ProxyEntry) async -> (String, ProxyHealth) {
-        guard let script = entry.script else {
+    /// Runs one health check. Custom scripts are probed at the URL their cache
+    /// already holds — a check never runs the script, so it can never rotate
+    /// the exit or trip the provider's change cooldown. An entry with nothing
+    /// resolved yet has nothing to dial and keeps its last health untouched
+    /// (nil here) instead of borrowing a script error as a failed check.
+    private func checkEntry(_ entry: ProxyEntry) async -> (String, ProxyHealth?) {
+        guard entry.script != nil else {
             return (entry.id, await healthChecker(entry.url))
         }
-        do {
-            let resolved = try ProxyScriptRunner.resolve(script, cacheID: entry.id)
-            return (entry.id, await healthChecker(resolved))
-        } catch {
-            return (entry.id, ProxyHealth(
-                ok: false,
-                latencyMs: nil,
-                checkedAt: Date().timeIntervalSince1970 * 1_000,
-                error: error.localizedDescription
-            ))
+        guard let resolved = proxyScriptCachedURL(for: entry.id) else {
+            return (entry.id, nil)
         }
+        return (entry.id, await healthChecker(resolved))
     }
 }
 
