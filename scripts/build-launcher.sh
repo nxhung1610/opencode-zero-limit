@@ -12,8 +12,13 @@ mkdir -p "$ROOT/build"
 swift build --package-path "$PACKAGE" --configuration release --product RelayDockLauncher
 swift build --package-path "$PACKAGE" --configuration release --product RelayDockEdge
 BIN_PATH="$(swift build --package-path "$PACKAGE" --configuration release --show-bin-path)"
-cp -f "$BIN_PATH/RelayDockLauncher" "$OUTPUT"
-cp -f "$BIN_PATH/RelayDockEdge" "$EDGE_OUTPUT"
+# Replace via a fresh inode (mv renames): `cp -f` over an already-executed
+# Mach-O reuses its inode, and macOS then SIGKILLs it ("Killed: 9") on the
+# next launch — stale code-signature state for the overwritten vnode.
+cp -f "$BIN_PATH/RelayDockLauncher" "$OUTPUT.tmp"
+cp -f "$BIN_PATH/RelayDockEdge" "$EDGE_OUTPUT.tmp"
+mv -f "$OUTPUT.tmp" "$OUTPUT"
+mv -f "$EDGE_OUTPUT.tmp" "$EDGE_OUTPUT"
 test -x "$OUTPUT"
 test -x "$EDGE_OUTPUT"
 

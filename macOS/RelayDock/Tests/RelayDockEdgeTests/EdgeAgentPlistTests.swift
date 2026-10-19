@@ -52,4 +52,24 @@ struct EdgeAgentPlistTests {
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["Sockets"] == nil)
     }
+
+    /// The installer bakes the *installed* binary path — defaulting to
+    /// `ownExecutablePath()` would point launchd at the build directory or the
+    /// app bundle.
+    @Test func plistBakesTheInstalledExecutableForTheInstaller() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-plist-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let environment = ["RELAYDOCK_CONFIG_DIR": home.appending(path: "missing").path]
+
+        let plist = try #require(
+            EdgeMain.agentPlist(environment: environment, executablePath: "/Users/test/.local/bin/relaydock-edge")
+        )
+
+        #expect(
+            plist["ProgramArguments"] as? [String]
+                == ["/Users/test/.local/bin/relaydock-edge", "run"]
+        )
+    }
 }
