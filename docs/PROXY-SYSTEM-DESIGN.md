@@ -102,6 +102,11 @@ by Edge instead of at spawn time.
   expiry, the next new connection triggers a resolve first. RelayDock never cuts a tunnel for
   rotation — but provider-side endpoint death (~30 min lifetime) can still drop a long-running
   stream mid-flight; the client retry then hits the refreshed upstream.
+- **Rotation script (worked example):** the live 5-minute rotation script is mirrored, key
+  removed, at `docs/templates/bestproxy-rotate-5m.js`. Its cache window is
+  `min(5 min, provider lifetime − 60 s)` with a 30 s floor, so a resolve stays clear of the
+  provider's ~60 s change cooldown and the exit IP re-resolves on roughly a 5-minute cadence
+  instead of waiting out the endpoint's full lifetime.
 - **Reactive failover:** a failed dial is a strong signal. Edge single-flight-resolves and retries
   the client’s connection once internally, so a dead endpoint usually becomes transparently
   slower instead of an error. Three consecutive failures (within 30 s) additionally mark the
