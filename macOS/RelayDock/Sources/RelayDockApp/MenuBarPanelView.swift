@@ -25,6 +25,8 @@ struct MenuBarPanelView: View {
                 .padding(.vertical, 12)
         }
         .frame(width: 360)
+        .modifier(RoutingModeWarningPresenter(model: model, source: .menu))
+        .onDisappear { model.cancelRoutingChanges(from: .menu) }
         .task {
             if model.state == nil && model.loadError == nil {
                 model.load()
@@ -49,8 +51,11 @@ struct MenuBarPanelView: View {
         if let state = model.state {
             VStack(alignment: .leading, spacing: 12) {
                 ModeSegmentedPicker(mode: modeBinding)
+                    .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
 
                 stateAnchor(state)
+
+                OpenCodeRoutingNotice(model: model, compact: true)
 
                 switch model.edgePanel {
                 case .running(let status):
@@ -139,9 +144,9 @@ struct MenuBarPanelView: View {
         Binding(
             get: { model.state?.mode ?? .off },
             set: { mode in
-                model.selectMode(mode)
-                if model.isManualChooserPresented {
-                    presentWindow()
+                Task {
+                    await model.selectMode(mode, source: .menu)
+                    if model.isManualChooserPresented { presentWindow() }
                 }
             }
         )

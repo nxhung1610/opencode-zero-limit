@@ -255,8 +255,9 @@ private struct ProxyPoolRow: View {
                         Label("Selected for Manual", systemImage: "checkmark.circle")
                             .foregroundStyle(.secondary)
                     } else if currentProxy.enabled, currentProxy.hasValidDefinition {
-                        Button("Use as Manual") { model.selectManualProxy(proxy.id) }
+                        Button("Use as Manual") { Task { await model.selectManualProxy(proxy.id) } }
                             .appAction(.link, size: .small)
+                            .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
                     }
 
                     if model.state?.mode == .manual,
@@ -288,5 +289,4 @@ private struct ProxyPoolRow: View {
         return "\(result) · \(relative)"
     }
 }
-
 

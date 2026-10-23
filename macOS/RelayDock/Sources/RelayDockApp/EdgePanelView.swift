@@ -29,6 +29,26 @@ struct EdgeAttribution: Identifiable, Equatable {
     var lastActivity: Double
 }
 
+enum OpenCodeTrafficEvidence: Equatable {
+    case routingOff
+    case notObserved
+    case observed(lastSeen: Double)
+
+    static func resolve(from status: EdgeStatusResponse) -> Self {
+        guard status.mode != .off else { return .routingOff }
+
+        let lastSeen = status.tunnels.compactMap { tunnel -> Double? in
+            guard tunnel.peerName?.localizedCaseInsensitiveContains("opencode") == true,
+                  let label = tunnel.label,
+                  label != "direct (fallback)" else { return nil }
+            return tunnel.endedAt ?? tunnel.startedAt
+        }.max()
+
+        guard let lastSeen else { return .notObserved }
+        return .observed(lastSeen: lastSeen)
+    }
+}
+
 struct EdgePanelView: View {
     @ObservedObject var model: ProxyAppModel
 
@@ -106,6 +126,7 @@ struct EdgePanelView: View {
 
     @ViewBuilder
     private func runningDetail(_ status: EdgeStatusResponse) -> some View {
+        if !model.hasOpenCodeRoutingNotice { trafficVerification(status) }
         if let upstream = status.upstream {
             LabeledContent("Upstream") {
                 Text(upstreamLine(upstream))
@@ -146,6 +167,40 @@ struct EdgePanelView: View {
             }
         }
         attribution
+    }
+
+    @ViewBuilder
+    private func trafficVerification(_ status: EdgeStatusResponse) -> some View {
+        Group {
+            switch OpenCodeTrafficEvidence.resolve(from: status) {
+            case .routingOff:
+                Label("Routing is Off; proxying is disabled.", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            case .notObserved:
+                Label(
+                    "No OpenCode traffic observed through a proxy yet. Make a fresh model request to verify.",
+                    systemImage: "questionmark.circle"
+                )
+                .foregroundStyle(.orange)
+            case .observed(let lastSeen):
+                if Date().timeIntervalSince1970 - lastSeen <= 300 {
+                    Label(
+                        "OpenCode traffic seen through a proxy \(relativeTime(lastSeen)).",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+                } else {
+                    Label(
+                        "Last OpenCode proxy tunnel \(relativeTime(lastSeen)); no recent traffic to verify.",
+                        systemImage: "clock"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+        .help("This reflects only tunnels Edge served. Traffic that bypasses Edge cannot be observed here.")
     }
 
     private func upstreamLine(_ upstream: EdgeStatusResponse.Upstream) -> String {

@@ -26,8 +26,11 @@ struct RelayDockApp: App {
         .defaultSize(width: 680, height: 460)
         .windowResizability(.contentMinSize)
 
-        MenuBarExtra("RelayDock", systemImage: "arrow.left.arrow.right") {
+        MenuBarExtra {
             MenuBarPanelView(model: model)
+        } label: {
+            Image(nsImage: MenuBarIcon.image)
+                .accessibilityLabel("RelayDock")
         }
         .menuBarExtraStyle(.window)
     }

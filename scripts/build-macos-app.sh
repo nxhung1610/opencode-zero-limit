@@ -23,6 +23,8 @@ ICONSET="$STAGING_ROOT/RelayDock.iconset"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$ICONSET"
 cp "$PACKAGE/.build/release/RelayDock" "$BUNDLE/Contents/MacOS/RelayDock"
 cp "$ROOT/macOS/Info.plist" "$BUNDLE/Contents/Info.plist"
+RESOURCE_BUNDLE="RelayDock_RelayDockApp.bundle"
+cp -R "$PACKAGE/.build/release/$RESOURCE_BUNDLE" "$BUNDLE/Contents/Resources/$RESOURCE_BUNDLE"
 # The wrapper pair rides inside the app so the Routing tab can install
 # routing without a source checkout. Fresh inode via rm+cp: cp over an
 # already-executed Mach-O reuses the inode and macOS then SIGKILLs it
@@ -63,6 +65,8 @@ if [[ -e "$OUTPUT" ]]; then
   cp -f "$BUNDLE/Contents/Info.plist" "$OUTPUT/Contents/Info.plist"
   cp -f "$BUNDLE/Contents/MacOS/RelayDock" "$OUTPUT/Contents/MacOS/RelayDock"
   cp -f "$BUNDLE/Contents/Resources/AppIcon.icns" "$OUTPUT/Contents/Resources/AppIcon.icns"
+  mkdir -p "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
+  ditto "$BUNDLE/Contents/Resources/$RESOURCE_BUNDLE" "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
   # Fresh inode for the wrapper pair (see above): the app may have run the
   # copies already installed in this bundle.
   rm -f "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
@@ -81,6 +85,7 @@ codesign --verify --strict "$OUTPUT"
 plutil -lint "$OUTPUT/Contents/Info.plist"
 test -x "$OUTPUT/Contents/MacOS/RelayDock"
 test -s "$OUTPUT/Contents/Resources/AppIcon.icns"
+test -d "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
 test -x "$OUTPUT/Contents/Resources/relaydock-launch"
 test -x "$OUTPUT/Contents/Resources/relaydock-edge"
 echo "Built $OUTPUT"

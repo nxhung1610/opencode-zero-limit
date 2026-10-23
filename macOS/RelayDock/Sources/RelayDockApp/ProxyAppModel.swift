@@ -40,6 +40,9 @@ final class ProxyAppModel: ObservableObject {
     /// Which checker the last Test All used — the pool view says so out loud
     /// when Edge is unreachable and the check fell back in-process.
     @Published private(set) var lastCheckRoute: CheckRoute?
+    @Published private(set) var openCodeRouting: OpenCodeRoutingSnapshot?
+    @Published private(set) var isCheckingOpenCodeRouting = false
+    @Published private(set) var pendingRoutingChange: PendingRoutingChange?
 
     private let store: ProxyStore
     /// The updater's lifecycle; the footer rows render it, nothing else mutates it.
@@ -48,6 +51,10 @@ final class ProxyAppModel: ObservableObject {
     let routingSetup: RoutingSetupModel
     private let edgeStatusProvider: @Sendable (EdgeConfigFile) async -> EdgeStatusResponse?
     private let edgeCheckRunner: @Sendable (EdgeConfigFile) async -> EdgeCheckResponse?
+    private let routingProbe: @Sendable (EdgeConfigFile?) async -> OpenCodeRoutingSnapshot
+    private var routingProbeTask: Task<OpenCodeRoutingSnapshot, Never>?
+    private var modeChangeID = UUID()
+    private var modeChangeSource: RoutingChangeSource?
 
     init(
         store: ProxyStore = ProxyStore(),
@@ -58,6 +65,9 @@ final class ProxyAppModel: ObservableObject {
         },
         edgeCheckRunner: @escaping @Sendable (EdgeConfigFile) async -> EdgeCheckResponse? = { config in
             await EdgeStatusClient.runChecksAsync(config: config, scope: .all)
+        },
+        routingProbe: @escaping @Sendable (EdgeConfigFile?) async -> OpenCodeRoutingSnapshot = { config in
+            await OpenCodeRoutingProbe.inspect(edgeConfig: config)
         }
     ) {
         self.store = store
@@ -65,6 +75,7 @@ final class ProxyAppModel: ObservableObject {
         self.routingSetup = routingSetup ?? RoutingSetupModel(storeDirectory: store.fileURL.deletingLastPathComponent())
         self.edgeStatusProvider = edgeStatusProvider
         self.edgeCheckRunner = edgeCheckRunner
+        self.routingProbe = routingProbe
     }
 
     var enabledCount: Int { state?.enabledProxies.count ?? 0 }
@@ -93,8 +104,17 @@ final class ProxyAppModel: ObservableObject {
         load()
     }
 
-    func selectMode(_ mode: ProxyMode) {
+    func selectMode(_ mode: ProxyMode, source: RoutingChangeSource = .window) async {
         guard let current = state else { return }
+        if mode == .off {
+            modeChangeID = UUID()
+            pendingRoutingChange = nil
+            isCheckingOpenCodeRouting = false
+            saveMode(mode, manualID: current.manualId)
+            return
+        }
+        guard !isCheckingOpenCodeRouting, pendingRoutingChange == nil else { return }
+        guard current.mode != mode else { return }
         if mode == .manual, !manualSelectionIsUsable {
             if manualCandidates.isEmpty {
                 errorMessage = "Import or enable a valid proxy before selecting Manual mode."
@@ -103,14 +123,97 @@ final class ProxyAppModel: ObservableObject {
             }
             return
         }
-        saveMode(mode, manualID: current.manualId)
+        await requestRoutingChange(mode: mode, manualID: current.manualId, source: source)
     }
 
-    func selectManualProxy(_ id: String) {
-        saveMode(.manual, manualID: id)
-        if state?.mode == .manual, state?.manualId == id {
+    func selectManualProxy(_ id: String, source: RoutingChangeSource = .window) async {
+        guard !isCheckingOpenCodeRouting, pendingRoutingChange == nil else { return }
+        guard state?.mode != .manual || state?.manualId != id else { return }
+        await requestRoutingChange(mode: .manual, manualID: id, source: source)
+    }
+
+    private func requestRoutingChange(mode: ProxyMode, manualID: String?, source: RoutingChangeSource) async {
+        guard let current = state else { return }
+        let id = UUID()
+        modeChangeID = id
+        modeChangeSource = source
+        isCheckingOpenCodeRouting = true
+        defer { if modeChangeID == id { isCheckingOpenCodeRouting = false } }
+        let report = await refreshOpenCodeRouting(force: true)
+        guard !Task.isCancelled, modeChangeID == id else { return }
+        let request = PendingRoutingChange(
+            id: id, mode: mode, manualID: manualID,
+            previousMode: current.mode, previousManualID: current.manualId,
+            source: source, report: report
+        )
+        if !report.affectedServers.isEmpty {
+            pendingRoutingChange = request
+        } else {
+            // Unknown is not a pass: the notice remains visible after saving,
+            // but a lack of evidence alone must not produce a bypass popup.
+            commitRoutingChange(request)
+        }
+    }
+
+    func cancelRoutingChange(_ id: UUID) {
+        guard pendingRoutingChange?.id == id else { return }
+        pendingRoutingChange = nil
+        modeChangeID = UUID()
+    }
+
+    func cancelRoutingChanges(from source: RoutingChangeSource) {
+        guard modeChangeSource == source else { return }
+        modeChangeID = UUID()
+        pendingRoutingChange = nil
+        isCheckingOpenCodeRouting = false
+    }
+
+    func confirmRoutingChange(_ request: PendingRoutingChange) {
+        guard pendingRoutingChange?.id == request.id, modeChangeID == request.id else { return }
+        commitRoutingChange(request)
+        pendingRoutingChange = nil
+    }
+
+    private func commitRoutingChange(_ request: PendingRoutingChange) {
+        guard modeChangeID == request.id else { return }
+        do {
+            // Re-read policy after the probe/dialog; another surface or app
+            // instance must not have its newer mode overwritten by this one.
+            let latest = try store.load()
+            guard latest.mode == request.previousMode, latest.manualId == request.previousManualID else {
+                state = latest
+                errorMessage = "Routing settings changed while checking OpenCode. Please choose the mode again."
+                return
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        saveMode(request.mode, manualID: request.manualID)
+        if request.mode == .manual, state?.mode == .manual, state?.manualId == request.manualID {
             isManualChooserPresented = false
         }
+    }
+
+    @discardableResult
+    func refreshOpenCodeRouting(force: Bool = false) async -> OpenCodeRoutingSnapshot {
+        if let task = routingProbeTask { return await task.value }
+        if !force, let report = openCodeRouting, Date().timeIntervalSince1970 - report.checkedAt < 10 {
+            return report
+        }
+        let probe = routingProbe
+        let config = loadEdgeConfig()
+        let task = Task { await probe(config) }
+        routingProbeTask = task
+        let report = await task.value
+        openCodeRouting = report
+        routingProbeTask = nil
+        return report
+    }
+
+    var hasOpenCodeRoutingNotice: Bool {
+        guard let state, state.mode != .off, let report = openCodeRouting else { return false }
+        return !report.affectedServers.isEmpty || report.isUnverified
     }
 
     func setEnabled(_ id: String, enabled: Bool) {
@@ -301,6 +404,7 @@ final class ProxyAppModel: ObservableObject {
     func pollEdgeStatusWhileVisible() async {
         while !Task.isCancelled {
             await refreshEdgeStatus()
+            if state?.mode != .off { await refreshOpenCodeRouting() }
             do {
                 try await Task.sleep(for: .seconds(3))
             } catch {

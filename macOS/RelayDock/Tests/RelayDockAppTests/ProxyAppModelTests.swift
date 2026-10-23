@@ -4,19 +4,19 @@ import Testing
 @testable import RelayDockApp
 
 struct ProxyAppModelTests {
-    @Test @MainActor func manualModeRequiresAnExplicitEnabledProxy() throws {
+    @Test @MainActor func manualModeRequiresAnExplicitEnabledProxy() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let imported = try store.importProxies("http://proxy.example:8080")
-        let model = ProxyAppModel(store: store)
+        let model = ProxyAppModel(store: store, routingProbe: { _ in .init() })
         model.load()
 
-        model.selectMode(.manual)
+        await model.selectMode(.manual)
 
         #expect(model.state?.mode == .off)
         #expect(model.isManualChooserPresented)
 
-        model.selectManualProxy(imported.proxies[0].id)
+        await model.selectManualProxy(imported.proxies[0].id)
 
         #expect(model.state?.mode == .manual)
         #expect(model.state?.manualId == imported.proxies[0].id)
@@ -49,32 +49,32 @@ struct ProxyAppModelTests {
         #expect(model.state == initial)
     }
 
-    @Test @MainActor func manualSelectionUsabilityTracksEnabledAndValidState() throws {
+    @Test @MainActor func manualSelectionUsabilityTracksEnabledAndValidState() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let imported = try store.importProxies("http://proxy.example:8080")
-        let model = ProxyAppModel(store: store)
+        let model = ProxyAppModel(store: store, routingProbe: { _ in .init() })
         model.load()
 
         #expect(!model.manualSelectionIsUsable)
 
-        model.selectManualProxy(imported.proxies[0].id)
+        await model.selectManualProxy(imported.proxies[0].id)
         #expect(model.manualSelectionIsUsable)
 
         model.setEnabled(imported.proxies[0].id, enabled: false)
         #expect(!model.manualSelectionIsUsable)
     }
 
-    @Test @MainActor func manualModeSwitchesDirectlyWhenSelectionIsUsable() throws {
+    @Test @MainActor func manualModeSwitchesDirectlyWhenSelectionIsUsable() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let imported = try store.importProxies("http://proxy.example:8080")
-        let model = ProxyAppModel(store: store)
+        let model = ProxyAppModel(store: store, routingProbe: { _ in .init() })
         model.load()
-        model.selectManualProxy(imported.proxies[0].id)
-        model.selectMode(.off)
+        await model.selectManualProxy(imported.proxies[0].id)
+        await model.selectMode(.off)
 
-        model.selectMode(.manual)
+        await model.selectMode(.manual)
 
         #expect(model.state?.mode == .manual)
         #expect(!model.isManualChooserPresented)

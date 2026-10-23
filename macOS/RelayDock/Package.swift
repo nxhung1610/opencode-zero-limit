@@ -12,7 +12,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "RelayDockCore"),
-        .executableTarget(name: "RelayDockApp", dependencies: ["RelayDockCore"]),
+        .executableTarget(
+            name: "RelayDockApp",
+            dependencies: ["RelayDockCore"],
+            resources: [.process("Resources")]
+        ),
         .executableTarget(name: "RelayDockLauncher", dependencies: ["RelayDockCore"]),
         .executableTarget(name: "RelayDockEdge", dependencies: ["RelayDockCore"]),
         .testTarget(name: "RelayDockCoreTests", dependencies: ["RelayDockCore"]),

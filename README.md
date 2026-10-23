@@ -271,6 +271,10 @@ opencode service stop && opencode service start   # interrupts active sessions
 
 With the constant environment, later endpoint rotations need no service restart. A cold start (no service running) inherits the wrapper's environment automatically. `opencode service restart` respawns the service without your shell environment — use stop + start.
 
+Before saving Manual/Auto or a new Manual selection, RelayDock checks the startup proxy environment of native, same-user local OpenCode servers (`serve` / `--standalone`). If it finds a server without an Edge proxy, using another endpoint, or bypassing all proxies with `NO_PROXY=*`, it asks for confirmation. **Cancel** leaves the saved mode unchanged; **Change Mode Anyway** saves only the policy; **How to Fix…** explains the manual recovery. RelayDock never restarts OpenCode for you. The same guard applies in Routing, the menu bar, and Proxy Pool.
+
+A notice stays in Routing and the menu until a later inspection no longer finds the issue. Unavailable inspection is labeled unverified, not treated as a confirmed bypass. This is a best-effort startup-environment check, not traffic verification; it cannot identify remote or embedded SDK servers, and idle sessions do not trigger a popup just because no recent tunnel exists.
+
 The wrapper only affects commands started after it is installed; already-running processes and the app are untouched. It replaces itself with the command, so the launched process keeps the shell job's pid and foreground process group — terminal job control, Ctrl+C, and full-screen TUIs behave as if the wrapper were not there. Verify a launch independently (the routing line reports the environment the wrapper set, and Edge's status reports the tunnels it served — neither proves that every OpenCode process used a proxy):
 
 ```sh

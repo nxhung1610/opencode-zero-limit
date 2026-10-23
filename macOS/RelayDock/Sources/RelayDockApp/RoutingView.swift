@@ -11,6 +11,9 @@ struct RoutingView: View {
                     routingState(state)
 
                     ModeSegmentedPicker(mode: modeBinding)
+                        .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
+
+                    OpenCodeRoutingNotice(model: model)
 
                     if state.mode == .manual {
                         manualProxyControl(state)
@@ -40,7 +43,7 @@ struct RoutingView: View {
     private var modeBinding: Binding<ProxyMode> {
         Binding(
             get: { model.state?.mode ?? .off },
-            set: { model.selectMode($0) }
+            set: { mode in Task { await model.selectMode(mode) } }
         )
     }
 
@@ -104,7 +107,7 @@ struct RoutingView: View {
                 "Manual Proxy",
                 selection: Binding(
                     get: { model.state?.manualId ?? manualID },
-                    set: { model.selectManualProxy($0) }
+                    set: { id in Task { await model.selectManualProxy(id) } }
                 )
             ) {
                 ForEach(model.manualCandidates) { proxy in
@@ -113,6 +116,7 @@ struct RoutingView: View {
                 }
             }
             .controlSize(.large)
+            .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
         } else {
             LabeledContent("Manual Proxy") {
                 HStack(spacing: 10) {

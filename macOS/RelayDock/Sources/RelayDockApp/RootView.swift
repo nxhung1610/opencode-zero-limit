@@ -60,9 +60,13 @@ struct RootView: View {
         .task {
             await model.updates.autoCheckIfDue()
         }
-        .sheet(isPresented: $model.isManualChooserPresented) {
+        .sheet(isPresented: $model.isManualChooserPresented, onDismiss: {
+            model.cancelRoutingChanges(from: .manualChooser)
+        }) {
             ManualProxyChooser(model: model)
         }
+        .modifier(RoutingModeWarningPresenter(model: model, source: .window))
+        .onDisappear { model.cancelRoutingChanges(from: .window) }
         .alert(
             "Couldn’t update proxy settings",
             isPresented: Binding(
@@ -116,8 +120,7 @@ private struct ManualProxyChooser: View {
 
             List(model.manualCandidates) { proxy in
                 Button {
-                    model.selectManualProxy(proxy.id)
-                    dismiss()
+                    Task { await model.selectManualProxy(proxy.id, source: .manualChooser) }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(proxy.label)
@@ -132,12 +135,14 @@ private struct ManualProxyChooser: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
             }
             .listStyle(.plain)
 
             HStack {
                 Spacer()
                 Button("Cancel") {
+                    model.cancelRoutingChanges(from: .manualChooser)
                     model.isManualChooserPresented = false
                     dismiss()
                 }
@@ -147,5 +152,6 @@ private struct ManualProxyChooser: View {
         }
         .padding(18)
         .frame(width: 420, height: 330)
+        .modifier(RoutingModeWarningPresenter(model: model, source: .manualChooser))
     }
 }
