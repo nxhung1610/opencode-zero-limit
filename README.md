@@ -1,26 +1,94 @@
 <p align="center">
-  <img src="brand/icon-1024.png" width="160" alt="RelayDock app icon">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/readme-hero-dark.png">
+    <img src="brand/readme-hero-light.png" alt="RelayDock — proxy routing for OpenCode" width="100%">
+  </picture>
 </p>
 
-<h1 align="center">RelayDock for macOS</h1>
-
-<p align="center"><strong>A native macOS menu-bar app and loopback daemon for a rotating, health-checked proxy pool — built for OpenCode.</strong></p>
-
 <p align="center">
+  <a href="https://github.com/nxhung1610/relaydock/releases/latest"><img src="https://img.shields.io/github/v/release/nxhung1610/relaydock?style=flat-square&amp;label=release&amp;color=4F46E5&amp;labelColor=0F172A" alt="Release"></a>
   <a href="https://github.com/nxhung1610/relaydock/actions/workflows/ci.yml"><img src="https://github.com/nxhung1610/relaydock/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/nxhung1610/relaydock/releases/latest"><img src="https://img.shields.io/github/v/release/nxhung1610/relaydock?style=flat-square&amp;label=release&amp;color=2563eb" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/nxhung1610/relaydock?style=flat-square&amp;color=38bdf8" alt="License"></a>
-  <a href="README.md#requirements"><img src="https://img.shields.io/badge/macOS%2014%2B-Apple%20Silicon-111827?style=flat-square" alt="Platform"></a>
-  <a href="https://www.swift.org"><img src="https://img.shields.io/badge/Swift-6-F05138?style=flat-square&amp;logo=swift&amp;logoColor=white" alt="Swift"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/nxhung1610/relaydock?style=flat-square&amp;color=10B981&amp;labelColor=0F172A" alt="MIT"></a>
+  <img src="https://img.shields.io/badge/macOS%2014%2B-Apple%20Silicon-111827?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-6-F05138?style=flat-square&amp;logo=swift&amp;logoColor=white" alt="Swift 6">
+  <img src="https://img.shields.io/badge/OpenCode-ready-0EA5E9?style=flat-square&amp;labelColor=0F172A" alt="OpenCode ready">
 </p>
 
 <p align="center">
-  <a href="#installation">Install</a> · <a href="#features">Features</a> · <a href="#how-it-works">How it works</a> · <a href="#updates">Updates</a> · <a href="#security--privacy">Security</a> · <a href="#faq">FAQ</a> · <a href="#documentation">Docs</a>
+  <a href="#install"><strong>Install</strong></a> ·
+  <a href="#features">Features</a> ·
+  <a href="#see-it-in-action">Screenshots</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#updates">Updates</a> ·
+  <a href="#security--privacy">Security</a> ·
+  <a href="#faq">FAQ</a> ·
+  <a href="#documentation">Docs</a>
 </p>
 
 RelayDock is a native macOS menu-bar app plus a loopback daemon for a local proxy pool. Its optional PATH wrapper sends new OpenCode launches through **RelayDock Edge**, which resolves, rotates, and accounts for every tunnel. The app never launches or restarts OpenCode; traffic that bypasses Edge stays invisible.
 
-## Installation
+## Features
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>🔁 Rotating pool</strong><br>
+      <sub>HTTP, HTTPS, SOCKS4/4A/5/5H proxies, imported individually or in bulk.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <strong>🧩 Custom JavaScript entries</strong><br>
+      <sub>Named scripts with per-script caching and automatic re-resolution on dial failure.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>🧭 Off, Manual, Auto</strong><br>
+      <sub>Manual and Auto fail closed and never silently become Off.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <strong>🛟 Direct fallback</strong><br>
+      <sub>Opt-in, labeled, counted. Off by default; direct traffic is not verified.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>🗂️ Local-first</strong><br>
+      <sub>Pool at <code>~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json</code> with <code>0600</code> permissions, plus <code>RelayDockCore</code> helpers for custom launchers.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <strong>📊 Live Edge status</strong><br>
+      <sub>Upstream and expiry, rotation/failure counters, provider cooldown, recent tunnels with peer-process attribution, and the aggregate menu-bar count.</sub>
+    </td>
+  </tr>
+</table>
+
+A successful check only means the proxy passed a request to `https://www.gstatic.com/generate_204`; it does not verify OpenCode authentication, model access, or quota.
+
+## See it in action
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme-routing-dark.png">
+    <img src="docs/images/readme-routing-light.png" width="820" alt="RelayDock's Routing page: the proxy pool, policy controls, and live Edge status in one window.">
+  </picture>
+</p>
+
+<p align="center"><sub>Routing, policy, and live Edge status in one window.</sub></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme-panel-dark.png">
+    <img src="docs/images/readme-panel-light.png" width="340" alt="RelayDock's menu bar panel: mode, pool health, Test All, and Open RelayDock.">
+  </picture>
+</p>
+
+<p align="center"><sub>The menu bar panel stays one click away.</sub></p>
+
+## Install
+
+<p align="center">
+  <a href="https://github.com/nxhung1610/relaydock/releases/latest"><img src="https://img.shields.io/badge/Download-RelayDock.dmg-4F46E5?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Download RelayDock.dmg"></a>
+</p>
 
 ### The app
 
@@ -53,23 +121,14 @@ scripts/opencode-wrapper.sh install
 
 The wrapper only affects new launches: it sits in `PATH`, ensures Edge is running, and `exec`s the real binary under one constant loopback environment. Standalone `relaydock-launch` and `relaydock-edge` binaries are on the release page with `SHA256SUMS`.
 
-## Features
-
-- HTTP, HTTPS, SOCKS4/4A/5/5H proxies, imported individually or in bulk.
-- Named custom JavaScript entries with per-script caching and automatic re-resolution on dial failure.
-- Off, Manual, and Auto policy; Manual/Auto fail closed and never silently become Off.
-- Opt-in **Direct fallback**: a labeled, counted direct connection when no proxy is usable. Off by default; direct traffic is not verified.
-- Local pool at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with `0600` permissions, plus `RelayDockCore` helpers for custom launchers.
-- Live Edge status: upstream and expiry, rotation/failure counters, provider cooldown, recent tunnels with peer-process attribution, and the aggregate menu-bar count.
-
-A successful check only means the proxy passed a request to `https://www.gstatic.com/generate_204`; it does not verify OpenCode authentication, model access, or quota.
-
 ## How it works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
-  <img width="900" alt="Architecture: the app writes proxies.json; a wrapped terminal becomes RelayDock Edge's client through one constant loopback environment; Edge resolves, rotates, and dials the upstream proxy; a launchd agent and state files keep it running." src="docs/images/architecture-light.png">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+    <img width="900" alt="Architecture: the app writes proxies.json; a wrapped terminal becomes RelayDock Edge's client through one constant loopback environment; Edge resolves, rotates, and dials the upstream proxy; a launchd agent and state files keep it running." src="docs/images/architecture-light.png">
+  </picture>
+</p>
 
 RelayDock splits the job in two: the app edits the saved policy (`proxies.json`, `0600`), while **RelayDock Edge** makes every routing decision. Consumers point at one stable loopback endpoint, so rotation and failover never require restarting them. Edge resolves the active entry at startup (static URL or JavaScript script), single-flights concurrent resolutions, drops the cached result and re-resolves once when an upstream dies, and keeps one provider cooldown budget and one script cache.
 
