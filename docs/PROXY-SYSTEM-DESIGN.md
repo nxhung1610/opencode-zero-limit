@@ -188,7 +188,7 @@ by Edge instead of at spawn time.
   **evidence** — e.g. “OpenCode service (pid) tunneled 12 connections via BestProxy xoay, last
   2 min ago”. **Shipped wording (r3):** “RelayDock verifies traffic that routes through Edge;
   direct traffic stays invisible.” — used in the app footer, menu bar panel, installer hint, and
-  docs. The Routing tab’s Edge section and the menu bar’s Edge line render this evidence live
+  docs. The Routing page’s Edge section and the menu bar’s Edge line render this evidence live
   from `/__relaydock/status` (polled while a surface is visible; a miss reads as “not running”,
   never as an error).
 
@@ -255,7 +255,7 @@ by Edge instead of at spawn time.
   measures wrapped-vs-direct TPS read back from the OpenCode database.
 - **P2 — App integration (implemented):** launchd KeepAlive agent, launcher kickstart path, and
   agent-aware `stop` (§5); `Test All` delegating to Edge’s `/check?scope=all` with a labeled
-  in-process fallback; Routing tab Edge panel (mode, upstream + expiry, counters, cooldown, last
+  in-process fallback; Routing page Edge panel (mode, upstream + expiry, counters, cooldown, last
   error, tunnel attribution grouped by peer process) polled from `/status` while a
   window/popover is visible; menu bar Edge line; the honesty wording shipped across app, menu
   bar, installer hint, and docs; sandbox scenarios for agent wiring, kickstart, and
@@ -290,13 +290,13 @@ by Edge instead of at spawn time.
   with tunnel label `direct (fallback)` — also counted in the additive `directFallbacks` status
   counter and logged. Dial-retry exhaustion takes the same path, except for pinned listeners,
   which always fail closed. Fail-closed remains the default; the launcher never routes direct on
-  its own. The Routing tab shows the toggle (Manual/Auto), and the shared consequence line reads
+  its own. The Routing page shows the toggle (Manual/Auto), and the shared consequence line reads
   the setting.
 - **P4 — App-driven routing setup (implemented):** the app bundle carries `relaydock-launch` and
   `relaydock-edge` in `Contents/Resources` (named so the installer's default sibling launcher
   resolves inside the bundle; a SHA-256 comparison against the installed copies drives the drift
   check), and `relaydock-edge` gains `install`/`uninstall` subcommands so app and script share one
-  installer. The Routing tab grows a *Routing setup* card: **Install Routing** runs the bundled
+  installer. The Routing page grows a *Routing setup* section: **Install Routing** runs the bundled
   installer (same code path as the script — one installer, two frontends), **Update Components**
   appears when the installed pair differs from this build, **Verify** asks the user's login shell
   (`zsh -lic 'command -v opencode'`) and distinguishes "resolves to the wrapper" from a missing or

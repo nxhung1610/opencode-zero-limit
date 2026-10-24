@@ -9,18 +9,26 @@ import SwiftUI
 struct UpdateFooterView: View {
     @ObservedObject var updates: UpdateModel
     var showsWhenIdle = true
+    var showsVersion = true
+    /// The window banner already carries the phase title and detail, so its
+    /// controls drop the duplicate description.
+    var showsPhaseDescription = true
 
     var body: some View {
         if showsWhenIdle || updates.phase != .idle {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(updates.versionDisplayText)
-                    .font(.footnote)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
+            if showsVersion {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(updates.versionDisplayText)
+                        .font(.caption.monospaced())
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 8)
+                    controls
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
                 controls
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -38,7 +46,7 @@ struct UpdateFooterView: View {
 
         case .upToDate:
             Text("Up to Date")
-                .font(.footnote)
+                .font(.caption)
                 .foregroundStyle(.secondary)
 
         case .available(let release):
@@ -50,11 +58,17 @@ struct UpdateFooterView: View {
                 Button("Update to \(release.version)") {
                     Task { await updates.update() }
                 }
-                .appAction(.secondary, size: .regular)
+                .appAction(.primary, size: .regular)
             }
 
         case .downloading(let release):
-            busyLabel("Downloading \(release.version)…")
+            if showsPhaseDescription {
+                busyLabel("Downloading \(release.version)…")
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Downloading version \(release.version)")
+            }
 
         case .ready:
             Button("Restart to Update") {
@@ -63,12 +77,14 @@ struct UpdateFooterView: View {
             .appAction(.primary, size: .regular)
 
         case .failed(let message):
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                if showsPhaseDescription {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Button("Check for Updates") {
                     Task { await updates.check(userInitiated: true) }
                 }
@@ -82,7 +98,7 @@ struct UpdateFooterView: View {
             ProgressView()
                 .controlSize(.small)
             Text(text)
-                .font(.footnote)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }

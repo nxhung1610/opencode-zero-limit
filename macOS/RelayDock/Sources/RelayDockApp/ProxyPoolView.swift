@@ -4,105 +4,30 @@ import SwiftUI
 
 struct ProxyPoolView: View {
     @ObservedObject var model: ProxyAppModel
+    var onImport: () -> Void
+
     @State private var expandedID: String?
-    @State private var showImport = false
     @State private var removalTarget: ProxyEntry?
     @State private var editTarget: ProxyEntry?
 
+    /// `initiallyExpandedID` exists for fixtures, which need one row open
+    /// without a click; the app always starts collapsed.
+    init(
+        model: ProxyAppModel,
+        initiallyExpandedID: String? = nil,
+        onImport: @escaping () -> Void
+    ) {
+        self.model = model
+        self.onImport = onImport
+        _expandedID = State(initialValue: initiallyExpandedID)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center) {
-                AppTitle(title: "Proxy Pool", subtitle: "\(model.state?.proxies.count ?? 0) proxies")
-
-                Spacer()
-
-                Button {
-                    Task { await model.testAll() }
-                } label: {
-                    if model.isTesting {
-                        HStack(spacing: 7) {
-                            ProgressView().controlSize(.small)
-                            Text("Testing…")
-                        }
-                    } else {
-                        Label("Test All", systemImage: "arrow.clockwise")
-                    }
-                }
-                .appAction(.secondary, size: .large)
-                .disabled(model.isTesting || model.state?.enabledProxies.isEmpty != false)
-
-                Button {
-                    showImport = true
-                } label: {
-                    Label("Import", systemImage: "plus")
-                }
-                .appAction(.primary, size: .large)
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-            }
-            .padding(.horizontal, AppLayout.windowGutter)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
-
-            if let route = model.lastCheckRoute {
-                Text(route == .edge
-                     ? "Last check ran through RelayDock Edge."
-                     : "RelayDock Edge was unreachable, so the last check ran in this app.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, AppLayout.windowGutter)
-                    .padding(.bottom, 10)
-            }
-
-            if let notice = model.checkNotice {
-                Label(notice, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, AppLayout.windowGutter)
-                    .padding(.bottom, 10)
-                    .help("A skipped check still has nothing to probe; it is not a failure.")
-            }
-
-            Divider()
-
-            if let state = model.state, state.proxies.isEmpty {
-                ContentUnavailableView {
-                    Label("No proxies yet", systemImage: "network")
-                } description: {
-                    Text("Import proxy URLs to build your pool.")
-                } actions: {
-                    Button("Import Proxies") {
-                        showImport = true
-                    }
-                    .appAction(.primary, size: .large)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let proxies = model.state?.proxies {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(proxies) { proxy in
-                            ProxyPoolRow(
-                                proxy: proxy,
-                                model: model,
-                                expandedID: $expandedID,
-                                removalTarget: $removalTarget,
-                                editTarget: $editTarget
-                            )
-                            if proxy.id != proxies.last?.id {
-                                Divider().padding(.leading, 30)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 10)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            checkNotes
+            poolContent
         }
-        .sheet(isPresented: $showImport) {
-            ProxyImportSheet(model: model)
-        }
+        .navigationTitle("Proxy Pool")
         .sheet(item: $editTarget) { entry in
             ProxyImportSheet(model: model, editing: entry)
         }
@@ -123,6 +48,109 @@ struct ProxyPoolView: View {
             Text("This also clears any saved manual or sticky references to this proxy.")
         }
     }
+
+    // MARK: - Check notes
+
+    @ViewBuilder
+    private var checkNotes: some View {
+        if model.lastCheckRoute != nil || model.checkNotice != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if let route = model.lastCheckRoute {
+                    Label(
+                        route == .edge
+                            ? "Last check ran through RelayDock Edge."
+                            : "RelayDock Edge was unreachable, so the last check ran in this app.",
+                        systemImage: route == .edge ? "bolt.horizontal.circle" : "info.circle"
+                    )
+                }
+                if let notice = model.checkNotice {
+                    Label(notice, systemImage: "info.circle")
+                        .help("A skipped check still has nothing to probe; it is not a failure.")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(alignment: .bottom) { Divider() }
+        }
+    }
+
+    // MARK: - Body
+
+    @ViewBuilder
+    private var poolContent: some View {
+        if let state = model.state, state.proxies.isEmpty {
+            ContentUnavailableView {
+                Label("No Proxies", systemImage: "network")
+            } description: {
+                Text("Import proxy URLs to build your pool.")
+            } actions: {
+                Button("Import Proxies…", action: onImport)
+                    .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let proxies = model.state?.proxies {
+            List {
+                Section {
+                    ForEach(proxies) { proxy in
+                        ProxyPoolRow(
+                            proxy: proxy,
+                            model: model,
+                            expandedID: $expandedID,
+                            removalTarget: $removalTarget,
+                            editTarget: $editTarget
+                        )
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        Text("Proxies")
+                        Spacer(minLength: 8)
+                        Text(summary(proxies))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
+                            .lineLimit(1)
+                    }
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(footerSummary(proxies))
+                        Text(AppCopy.verificationHonesty)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .listStyle(.inset)
+        }
+    }
+
+    private func summary(_ proxies: [ProxyEntry]) -> String {
+        let enabled = proxies.filter(\.enabled)
+        let healthy = enabled.filter { $0.health?.ok == true }.count
+        let noun = proxies.count == 1 ? "proxy" : "proxies"
+        guard !enabled.isEmpty else { return "\(proxies.count) \(noun) · none enabled" }
+        return "\(proxies.count) \(noun) · \(healthy) of \(enabled.count) healthy"
+    }
+
+    /// The list's quiet summary: health counts plus the Auto eligibility rule.
+    private func footerSummary(_ proxies: [ProxyEntry]) -> String {
+        let enabled = proxies.filter(\.enabled)
+        let healthy = enabled.filter { $0.health?.ok == true }.count
+        let untested = enabled.filter { $0.health == nil }.count
+        let failed = enabled.filter { $0.health?.ok == false }.count
+        let disabled = proxies.count - enabled.count
+
+        var parts = ["\(healthy) healthy"]
+        if untested > 0 { parts.append("\(untested) untested") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if disabled > 0 { parts.append("\(disabled) disabled") }
+        parts.append("Unchecked stays eligible for Auto")
+        return parts.joined(separator: " · ")
+    }
 }
 
 private struct ProxyPoolRow: View {
@@ -132,34 +160,36 @@ private struct ProxyPoolRow: View {
     @Binding var removalTarget: ProxyEntry?
     @Binding var editTarget: ProxyEntry?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private var isExpanded: Bool { expandedID == proxy.id }
     private var currentProxy: ProxyEntry {
         model.state?.proxies.first(where: { $0.id == proxy.id }) ?? proxy
+    }
+    private var isManual: Bool {
+        model.state?.mode == .manual && model.state?.manualId == proxy.id
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Button {
-                    expandedID = isExpanded ? nil : proxy.id
+                    toggleExpanded()
                 } label: {
                     HStack(spacing: 10) {
                         ProxyHealthIcon(proxy: currentProxy)
-                        VStack(alignment: .leading, spacing: 3) {
+
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(proxy.label)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-                            if proxy.isCustomScript {
-                                Text("Custom script · resolves at launch")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            } else {
-                                Text(proxyLabel(for: proxy.url))
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+                                .font(.body)
+                                .foregroundStyle(proxy.enabled ? .primary : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Text(endpointLine)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                     .contentShape(Rectangle())
@@ -173,10 +203,10 @@ private struct ProxyPoolRow: View {
                     proxy: currentProxy,
                     mode: model.state?.mode ?? .off,
                     isTesting: model.isTesting,
-                    showsAge: false,
+                    showsAge: true,
                     font: .caption
                 )
-                .frame(minWidth: 96, alignment: .trailing)
+                .frame(minWidth: 100, alignment: .trailing)
 
                 Toggle(
                     "Enabled",
@@ -190,91 +220,120 @@ private struct ProxyPoolRow: View {
                 .controlSize(.small)
                 .accessibilityLabel("Enable \(proxy.label)")
 
-                Menu {
-                    if proxy.isCustomScript {
-                        Button {
-                            editTarget = proxy
-                        } label: {
-                            Label("Edit Script…", systemImage: "pencil")
-                        }
-                    }
-                    if let script = proxy.script {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(script, forType: .string)
-                        } label: {
-                            Label("Copy Script", systemImage: "doc.on.doc")
-                        }
-                    } else {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(maskedProxyURL(proxy.url), forType: .string)
-                        } label: {
-                            Label("Copy Masked URL", systemImage: "doc.on.doc")
-                        }
-                    }
-                    Button(role: .destructive) {
-                        removalTarget = proxy
-                    } label: {
-                        Label("Remove Proxy", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 24, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel("Actions for \(proxy.label)")
-
                 Button {
-                    expandedID = isExpanded ? nil : proxy.id
+                    toggleExpanded()
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: 20, height: 28)
+                        .frame(width: 18, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "Collapse \(proxy.label)" : "Expand \(proxy.label)")
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 3)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 10) {
-                    Divider()
-                    HStack(spacing: 24) {
-                        LabeledContent("Protocol", value: proxy.isCustomScript ? "Custom (JS)" : proxyScheme)
-                        LabeledContent("Last test", value: healthDetail)
-                    }
-
-                    if model.state?.mode == .manual, model.state?.manualId == proxy.id {
-                        Label("Selected for Manual", systemImage: "checkmark.circle")
-                            .foregroundStyle(.secondary)
-                    } else if currentProxy.enabled, currentProxy.hasValidDefinition {
-                        Button("Use as Manual") { Task { await model.selectManualProxy(proxy.id) } }
-                            .appAction(.link, size: .small)
-                            .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
-                    }
-
-                    if model.state?.mode == .manual,
-                       model.state?.manualId == proxy.id,
-                       !currentProxy.enabled {
-                        Label("This Manual selection is disabled; routing will fail closed.", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    }
-                }
-                .font(.caption)
-                .padding(.leading, 30)
-                .padding(.bottom, 12)
+                details
+                    .transition(.opacity)
             }
         }
-        .padding(.horizontal, 5)
-        .background(isExpanded ? Color.primary.opacity(0.025) : Color.clear)
+        .accessibilityElement(children: .contain)
     }
+
+    private var endpointLine: String {
+        if proxy.isCustomScript {
+            return "Custom script · resolves at launch"
+        }
+        return proxyLabel(for: proxy.url)
+    }
+
+    // MARK: - Details
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(spacing: 28) {
+                detailPair("Protocol", proxy.isCustomScript ? "Custom (JS)" : proxyScheme)
+                detailPair("Last test", healthDetail)
+            }
+
+            HStack(spacing: 16) {
+                if isManual {
+                    Label("Selected for Manual", systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                } else if currentProxy.enabled, currentProxy.hasValidDefinition {
+                    Button("Use as Manual") {
+                        Task { await model.selectManualProxy(proxy.id) }
+                    }
+                    .appAction(.link, size: .small)
+                    .disabled(model.isCheckingOpenCodeRouting || model.pendingRoutingChange != nil)
+                }
+
+                if proxy.isCustomScript {
+                    Button("Edit Script…") {
+                        editTarget = proxy
+                    }
+                    .appAction(.link, size: .small)
+                }
+
+                if let script = proxy.script {
+                    Button("Copy Script") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(script, forType: .string)
+                    }
+                    .appAction(.link, size: .small)
+                } else {
+                    Button("Copy Masked URL") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(maskedProxyURL(proxy.url), forType: .string)
+                    }
+                    .appAction(.link, size: .small)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    removalTarget = proxy
+                } label: {
+                    Text("Remove")
+                }
+                .appAction(.link, size: .small)
+            }
+
+            if isManual, !currentProxy.enabled {
+                Label(
+                    "This Manual selection is disabled; routing will fail closed.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.primary)
+            }
+        }
+        .font(.caption)
+        .padding(.bottom, 10)
+        .padding(.leading, 34)
+    }
+
+    private func detailPair(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .lineLimit(1)
+        }
+    }
+
+    private func toggleExpanded() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+            expandedID = isExpanded ? nil : proxy.id
+        }
+    }
+
+    // MARK: - Values
 
     private var proxyScheme: String {
         URLComponents(string: proxy.url)?.scheme?.uppercased() ?? "Unknown"
@@ -289,4 +348,3 @@ private struct ProxyPoolRow: View {
         return "\(result) · \(relative)"
     }
 }
-

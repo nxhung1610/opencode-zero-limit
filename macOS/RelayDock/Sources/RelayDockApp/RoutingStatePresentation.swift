@@ -1,33 +1,13 @@
 import RelayDockCore
-import SwiftUI
 
-/// One source of truth for how a routing state reads. The Routing tab and
-/// the menu bar panel share the same symbol, tint, headline, and consequence
-/// line so the two surfaces never drift apart.
+/// One source of truth for how a routing state reads. The Routing page and
+/// the menu bar panel share the same headline and consequence line so the two
+/// surfaces never drift apart.
 enum RoutingStatePresentation {
     /// The consequence sentence plus whether it reads as a warning.
     struct Consequence: Equatable {
         let text: String
         let isWarning: Bool
-    }
-
-    static func symbol(for state: ProxyState) -> String {
-        switch state.mode {
-        case .off: return "arrow.right.circle"
-        case .manual: return "hand.point.up.left"
-        case .auto: return "wand.and.stars"
-        }
-    }
-
-    static func tint(for state: ProxyState) -> Color {
-        switch state.mode {
-        case .off:
-            return .secondary
-        case .manual:
-            return validManual(in: state) != nil ? .accentColor : .orange
-        case .auto:
-            return state.autoEligibleProxies.isEmpty ? .orange : .green
-        }
     }
 
     static func headline(for state: ProxyState) -> String {
@@ -88,6 +68,24 @@ enum RoutingStatePresentation {
                 )
             }
             return Consequence(text: "Unchecked proxies may be eligible.", isWarning: false)
+        }
+    }
+
+    /// Warnings always get their line. Calm captions are shown only when they
+    /// add something now: Manual's fail-closed promise, and Auto's "unchecked
+    /// may be eligible" note while an enabled proxy is still unchecked.
+    static func shouldShowConsequence(
+        _ consequence: Consequence,
+        for state: ProxyState
+    ) -> Bool {
+        if consequence.isWarning { return true }
+        switch state.mode {
+        case .off:
+            return false
+        case .manual:
+            return true
+        case .auto:
+            return state.validEnabledProxies.contains { $0.health == nil }
         }
     }
 

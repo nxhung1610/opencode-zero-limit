@@ -51,6 +51,12 @@ import Testing
     }
 }
 
+/// A borderless fixture window that can become key, so AppKit draws controls
+/// with the active accent instead of the inactive gray treatment.
+private final class FixtureWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 private extension ColorScheme {
     var fixtureSlug: String { self == .dark ? "dark" : "light" }
 }
@@ -233,13 +239,51 @@ private extension UIFixturesTests {
 
     static func scenarios() throws -> [FixtureScenario] {
         let bothSchemes: [ColorScheme] = [.dark, .light]
-        let windowSize = CGSize(width: 680, height: 460)
+        let windowSize = CGSize(width: 760, height: 528)
         return [
             FixtureScenario(
                 name: "routing-auto",
                 size: windowSize,
                 schemes: bothSchemes,
                 content: window(try makeModel(mode: .auto, proxies: mixedPool))
+            ),
+            FixtureScenario(
+                name: "routing-auto-min",
+                size: CGSize(width: 680, height: 500),
+                schemes: bothSchemes,
+                content: window(try makeModel(mode: .auto, proxies: mixedPool))
+            ),
+            FixtureScenario(
+                name: "routing-update-available",
+                size: windowSize,
+                schemes: bothSchemes,
+                content: window(try updatePanelModel(.available(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "routing-update-available-min",
+                size: CGSize(width: 680, height: 500),
+                schemes: [.light],
+                content: window(try updatePanelModel(.available(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "routing-update-downloading",
+                size: windowSize,
+                schemes: [.light],
+                content: window(try updatePanelModel(.downloading(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "routing-update-ready",
+                size: windowSize,
+                schemes: [.light],
+                content: window(try updatePanelModel(.ready(fixtureRelease)))
+            ),
+            FixtureScenario(
+                name: "routing-update-failed",
+                size: windowSize,
+                schemes: [.light],
+                content: window(try updatePanelModel(
+                    .failed("The downloaded archive failed its SHA-256 check; nothing was installed.")
+                ))
             ),
             FixtureScenario(
                 name: "routing-auto-edge-live",
@@ -249,9 +293,15 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "routing-auto-edge-live-tall",
-                size: CGSize(width: 680, height: 640),
+                size: CGSize(width: 760, height: 740),
                 schemes: bothSchemes,
                 content: window(try edgeLiveModel())
+            ),
+            FixtureScenario(
+                name: "routing-advanced-expanded",
+                size: CGSize(width: 760, height: 980),
+                schemes: bothSchemes,
+                content: expandedRoutingWindow(try edgeLiveModel())
             ),
             FixtureScenario(
                 name: "routing-auto-edge-quiet",
@@ -285,19 +335,25 @@ private extension UIFixturesTests {
             ),
             FixtureScenario(
                 name: "routing-setup-not-installed",
-                size: CGSize(width: 680, height: 640),
+                size: CGSize(width: 760, height: 800),
                 schemes: bothSchemes,
                 content: window(try routingSetupNotInstalledModel())
             ),
             FixtureScenario(
                 name: "routing-setup-attention",
-                size: CGSize(width: 680, height: 640),
+                size: CGSize(width: 760, height: 800),
                 schemes: [.dark],
                 content: window(try routingSetupAttentionModel())
             ),
             FixtureScenario(
                 name: "pool-list",
                 size: windowSize,
+                schemes: bothSchemes,
+                content: window(try makeModel(mode: .auto, proxies: mixedPool, tab: .pool))
+            ),
+            FixtureScenario(
+                name: "pool-list-min",
+                size: CGSize(width: 680, height: 500),
                 schemes: bothSchemes,
                 content: window(try makeModel(mode: .auto, proxies: mixedPool, tab: .pool))
             ),
@@ -312,6 +368,18 @@ private extension UIFixturesTests {
                 size: windowSize,
                 schemes: [.dark],
                 content: window(try makeModel(mode: .auto, proxies: scriptPool, tab: .pool))
+            ),
+            FixtureScenario(
+                name: "pool-row-expanded",
+                size: CGSize(width: 760, height: 420),
+                schemes: bothSchemes,
+                content: AnyView(
+                    ProxyPoolView(
+                        model: try makeModel(mode: .auto, proxies: mixedPool, tab: .pool),
+                        initiallyExpandedID: "px_gateway_east"
+                    ) {}
+                    .background(.background)
+                )
             ),
             FixtureScenario(
                 name: "import-sheet-single",
@@ -481,6 +549,25 @@ private extension UIFixturesTests {
         } else {
             hosting.frame = CGRect(origin: .zero, size: hosting.fittingSize)
         }
+
+        // Native `List` and `NavigationSplitView` only lay out their rows once
+        // they are in a window; an unhosted NSHostingView renders the chrome
+        // but leaves the rows blank.
+        let window = FixtureWindow(
+            contentRect: CGRect(origin: .zero, size: hosting.frame.size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.appearance = appearance
+        window.contentView = hosting
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        defer { window.orderOut(nil) }
+
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        window.makeFirstResponder(nil)
         hosting.layoutSubtreeIfNeeded()
 
         let bounds = hosting.bounds
@@ -507,6 +594,15 @@ private extension UIFixturesTests {
     static func window(_ model: ProxyAppModel) -> AnyView {
         AnyView(
             RootView(model: model)
+                .background(.background)
+        )
+    }
+
+    /// The Routing page with its advanced section already open, so the fixture
+    /// exercises the setup and Edge details without a live click.
+    static func expandedRoutingWindow(_ model: ProxyAppModel) -> AnyView {
+        AnyView(
+            RootView(model: model, showsAdvanced: true)
                 .background(.background)
         )
     }

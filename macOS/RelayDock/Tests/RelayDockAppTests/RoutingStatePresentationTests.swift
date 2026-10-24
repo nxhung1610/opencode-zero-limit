@@ -38,4 +38,28 @@ struct RoutingStatePresentationTests {
         let autoFailedFallback = ProxyState(mode: .auto, proxies: [failed], directFallback: true)
         #expect(RoutingStatePresentation.consequence(for: autoFailedFallback).text.contains("falls back to direct connections"))
     }
+
+    @Test func calmAutoCaptionOnlyAppearsWhileAnEnabledProxyIsUnchecked() {
+        let tested = ProxyEntry(
+            id: "px_tested",
+            label: "Tested",
+            url: "http://proxy.example:8080",
+            health: ProxyHealth(ok: true, latencyMs: 10, checkedAt: 1_760_000_000_000)
+        )
+        let testedState = ProxyState(mode: .auto, proxies: [tested])
+        let testedCopy = RoutingStatePresentation.consequence(for: testedState)
+        #expect(!testedCopy.isWarning)
+        #expect(!RoutingStatePresentation.shouldShowConsequence(testedCopy, for: testedState))
+
+        let untested = ProxyEntry(id: "px_untested", label: "Untested", url: "http://proxy.example:8080")
+        let untestedState = ProxyState(mode: .auto, proxies: [untested])
+        let untestedCopy = RoutingStatePresentation.consequence(for: untestedState)
+        #expect(RoutingStatePresentation.shouldShowConsequence(untestedCopy, for: untestedState))
+
+        let offState = ProxyState(mode: .off, proxies: [])
+        #expect(!RoutingStatePresentation.shouldShowConsequence(
+            RoutingStatePresentation.consequence(for: offState),
+            for: offState
+        ))
+    }
 }

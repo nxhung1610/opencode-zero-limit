@@ -15,10 +15,11 @@ enum ProxyStatus {
         return "Passed"
     }
 
-    /// Color for `text(for:mode:isTesting:)`.
+    /// Ink weight for `text(for:mode:isTesting:)`: healthy rows stay quiet and
+    /// a failure takes full ink, so the row reads without hue.
     static func color(for proxy: ProxyEntry, isTesting: Bool) -> Color {
-        guard proxy.enabled, !isTesting, let health = proxy.health else { return .secondary }
-        return health.ok ? .secondary : .orange
+        guard proxy.enabled, !isTesting, let health = proxy.health else { return AppTheme.inkMuted }
+        return health.ok ? AppTheme.inkMuted : AppTheme.ink
     }
 
     /// Health-only summary without mode context, for detail rows like "Last test".

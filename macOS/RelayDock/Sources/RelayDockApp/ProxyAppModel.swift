@@ -47,7 +47,7 @@ final class ProxyAppModel: ObservableObject {
     private let store: ProxyStore
     /// The updater's lifecycle; the footer rows render it, nothing else mutates it.
     let updates: UpdateModel
-    /// The Routing tab's setup card (install/uninstall the PATH wrapper).
+    /// The Routing page's setup section (install/uninstall the PATH wrapper).
     let routingSetup: RoutingSetupModel
     private let edgeStatusProvider: @Sendable (EdgeConfigFile) async -> EdgeStatusResponse?
     private let edgeCheckRunner: @Sendable (EdgeConfigFile) async -> EdgeCheckResponse?

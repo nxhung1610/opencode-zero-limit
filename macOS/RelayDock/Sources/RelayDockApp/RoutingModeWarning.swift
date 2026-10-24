@@ -61,7 +61,7 @@ struct RoutingModeWarningView: View {
             Label {
                 Text("Some OpenCode sessions may not follow this mode")
             } icon: {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.primary)
             }
                 .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
@@ -91,6 +91,7 @@ struct RoutingModeWarningView: View {
                 Button("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
                 Button("Change Mode Anyway", action: confirm)
+                    .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
@@ -117,8 +118,9 @@ struct OpenCodeRoutingNotice: View {
                     Text(report.affectedServers.isEmpty
                         ? "OpenCode routing couldn't be verified"
                         : "\(report.affectedServers.count) OpenCode server\(report.affectedServers.count == 1 ? " may" : "s may") not follow this mode")
+                        .font(.callout.weight(.medium))
                 } icon: {
-                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.primary)
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 if !compact {
@@ -132,10 +134,12 @@ struct OpenCodeRoutingNotice: View {
                         .appAction(.link, size: .small)
                 }
             }
-            .font(.caption)
+            .font(.callout)
+            .padding(.vertical, compact ? 2 : 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .sheet(isPresented: $showsHelp) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Apply routing to OpenCode").font(.headline)
+                    Text("Apply routing to OpenCode").font(.title3.weight(.semibold))
                     RoutingRecoveryInstructions()
                     HStack {
                         Spacer()
@@ -166,7 +170,7 @@ private struct RoutingRecoveryInstructions: View {
             Text("For a standalone server, relaunch that server through the wrapper instead. If process inspection was unavailable, an administrator policy or macOS restriction may prevent verification.")
                 .foregroundStyle(.secondary)
         }
-        .font(.caption)
+        .font(.callout)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -1,25 +1,53 @@
 # RelayDock proxy app — wireframe variants
 
-**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, a menu bar Edge line, a shared routing-state presentation for the Routing tab and panel anchor, and the routing setup card that installs/uninstalls the PATH wrapper from the app (see "Implemented additions" below). The figures below remain the design reference; the app does not launch or control OpenCode processes.
+> **Current shell (October 2026):** The shipped app is a native macOS window: a `NavigationSplitView` with a **Routing** / **Proxy Pool** sidebar, a real toolbar with **Test All** and **Import Proxies**, grouped forms and an inset proxy list, and system controls. Default window **760×580 outer** (760×528 content under the unified toolbar) with a **680×500 content minimum**; the menu bar panel stays **360pt wide**. The variants below are the original wireframe exploration and no longer describe the app; they are kept for history.
 
-## Reference
+**Status:** implemented — config-only SwiftUI app with the P2 RelayDock Edge panel, delegated checks, an Edge line in the sidebar and menu bar panel, a shared routing-state presentation for the Routing page and panel anchor, and the routing setup section that installs/uninstalls the PATH wrapper from the app (see "Implemented additions" below). The app does not launch or control OpenCode processes.
 
-The attached Mos screenshot shows a compact Preferences window: centered title, a horizontal row of icon-and-label tabs, then a simple aligned settings form. **Variant A below follows that structure.** Mos's per-app screenshot also has a list/detail arrangement; that remains an alternative, not the primary direction.
+## Current shell
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│ ● ● ●   RelayDock                          [⟳ Test All]  [+ Import]  │
+├──────────────────┬───────────────────────────────────────────────────┤
+│ RelayDock        │ Overview                                          │
+│ ⇄ Routing        │ Status                              ✓ Auto         │
+│ ▦ Proxy Pool     │ Enabled                                      3    │
+│                  │ Auto eligible                              2/3    │
+│                  │ Healthy                                    1/3    │
+│                  │                                                   │
+│                  │ Policy                                            │
+│                  │ Mode              [ Off ] [ Manual ] [ Auto ]     │
+│                  │ Direct fallback                          [toggle] │
+│                  │                                                   │
+│ Edge · 1 active  │ RelayDock verifies traffic that routes through    │
+│ v0.4.1           │ Edge; direct traffic stays invisible.             │
+└──────────────────┴───────────────────────────────────────────────────┘
+```
+
+- The sidebar is navigation. The toolbar is actions. The app menu owns **Check for Updates…**.
+- Update news appears as a detail-top banner only for available, downloading, ready, or failed phases.
+- The menu bar panel keeps the same native controls at 360pt wide.
+
+
+## Historical exploration
+
+The variants below started from a Mos preferences screenshot: a compact Preferences window with centered title, horizontal icon-and-label tabs, then an aligned settings form. They assumed a top tab bar, no sidebar, and a 680×460 window. They are kept for history and no longer describe the shipped app.
 
 - [Mos preferences screenshots](https://github.com/Caldis/Mos/tree/master/assets/readme/en-us)
 - [Mos project README](https://github.com/Caldis/Mos/blob/master/README.enUS.md)
 
-Borrow the information hierarchy and native macOS density—not Mos's colors, icons, branding, or custom appearance. RelayDock has one domain, so use only two meaningful tabs and no sidebar.
+## Current constraints
 
-## Shared constraints
-
-- Compact native macOS window, suggested **680 × 460 pt**, resizable; target a usable minimum near **600 × 400 pt**.
-- Tabs are top-aligned icon + label controls. The Routing page owns Off/Manual/Auto; the Proxy Pool page owns import and tests.
+- Native macOS window, **760×580 outer** by default (760×528 content under the unified toolbar), resizable; **680×500 content minimum**. Sidebar 180–240pt wide.
+- The sidebar owns navigation; the toolbar owns **Test All** and **Import Proxies**; the app menu owns **Check for Updates…**.
 - No account, usage, app settings, or server start/stop controls.
-- A saved policy or successful endpoint check is not proof that OpenCode traffic used that route. The shipped honesty line is Edge-specific — "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible." — and appears on both tabs and in the menu bar.
+- A saved policy or successful endpoint check is not proof that OpenCode traffic used that route. The shipped honesty line is Edge-specific — "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible." — and appears in the Routing Policy footer, the Proxy Pool footer, and the menu bar panel's ⓘ popover.
 - Only explicit Off allows direct routing. Manual/Auto errors must never be converted into Off silently.
 
-## Variant A — Mos-style Preferences tabs (recommended)
+The following variants are historical. The shipped direction is the native sidebar/detail shell described above.
+
+## Variant A — Mos-style Preferences tabs
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -132,49 +160,48 @@ Popover width: **360–400 pt**. Detailed management opens a regular window.
 
 | Variant | Footprint | Best for |
 |---|---:|---|
-| **A — Preferences tabs** | 680 × 460 pt | Closest match to your Mos screenshot; recommended starting point |
+| **A — Preferences tabs** | 680 × 460 pt | Historical; closest match to the original Mos reference |
 | **B — Split inspector** | 700 × 460 pt | Frequent detailed editing |
 | **C — Inline list** | 590 × 390 pt | Smallest regular window |
 | **D — Menu-bar popover** | 360–400 pt wide | Quick mode changes from the menu bar |
 
 ## Shared interaction and states
 
-- The top tab row contains **Routing** and **Proxy Pool** only—no filler About/Updates tab.
+- The sidebar contains **Routing** and **Proxy Pool** only—no filler About/Updates item. The app menu owns update checking.
 - **Routing:** Off explicitly permits direct routing; Manual requires one enabled, valid proxy; Auto shows enabled/eligible counts and fails closed when none is usable. The opt-in **Direct fallback** toggle (Manual/Auto only; off by default) turns that failure into a labeled, counted direct connection instead.
-- **Proxy Pool:** `Test All` checks enabled entries, `+ Import` opens a multiline import sheet, and each proxy shows text health state plus enabled state.
+- **Proxy Pool:** the toolbar's **Test All** checks enabled entries, **Import Proxies** opens the import sheet, and each row shows text health state plus an enabled switch.
 - Failed checks remain endpoint-check results, not proof about live OpenCode traffic; only Edge's tunnel accounting speaks to real traffic, and only to the traffic that routes through Edge. Unknown health is distinct from failed health.
 - If Manual has no valid selection, keep the previous policy and prompt for a proxy. Never silently switch to Off.
 - Preserve pasted import text after validation errors and show invalid line numbers; mask credentials in labels, previews, and errors.
-- Use Aqua/system colors and controls in Light and Dark appearance. Pair color with a label/symbol, expose tab and control states to VoiceOver, and keep keyboard focus order visible.
+- Use native controls in Light and Dark appearance and the user's system accent for interactive controls. Keep status monochrome and pair it with a label/symbol; expose sidebar selection, proxy health, and enabled state to VoiceOver, and keep keyboard focus order visible.
 
 ## Implemented additions (P2)
 
-- **Routing tab — RelayDock Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, a direct-fallback count when nonzero, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar popover is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
-- **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers. Checks probe the proxy each entry is currently serving — live upstream, pinned upstream, or the resolution its script cache holds — and never run a script, so `Test All` can neither rotate an exit nor surface the provider's change cooldown; an entry with nothing resolved yet is reported as skipped, not failed. When Edge is unreachable the check falls back in-process, follows the same probe rule, and the pool header says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
-- **Menu bar — Edge line:** `Edge running · <upstream label | Direct | No upstream> · <N active>`, showing Edge's own mode only when it diverges from the saved one; `Edge not running` when the daemon does not answer (tooltip: starts on demand at the next wrapped launch). Hidden entirely when Edge is not configured.
-- **Honesty line (window footer + menu bar):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."
+- **Routing page — advanced Edge section:** live daemon state (running / not running / not configured), mode, upstream with source and expiry, rotation and failure counters, a direct-fallback count when nonzero, provider cooldown, last error, and recent tunnels grouped by peer process (pid + name, active-first). Polled from Edge's `/__relaydock/status` roughly every 3 s while the window or the menu bar panel is visible; a miss reads as "not running", never as an error. Footnote: "From Edge's own tunnel accounting."
+- **Proxy Pool — delegated `Test All`:** checks run inside Edge (`/check?scope=all`, available in every mode including Off) whenever `edge.json` exists and Edge answers. Checks probe the proxy each entry is currently serving — live upstream, pinned upstream, or the resolution its script cache holds — and never run a script, so `Test All` can neither rotate an exit nor surface the provider's change cooldown; an entry with nothing resolved yet is reported as skipped, not failed. When Edge is unreachable the check falls back in-process, follows the same probe rule, and the check-notes banner says so — "RelayDock Edge was unreachable, so the last check ran in this app." — or "Last check ran through RelayDock Edge." otherwise.
+- **Menu bar panel and sidebar — Edge line:** the panel shows `Edge running · <upstream label | Direct | No upstream> · <N active>`, showing Edge's own mode only when it diverges from the saved one; `Edge not running` when the daemon does not answer (tooltip: starts on demand at the next wrapped launch). The sidebar footer condenses the same state to `Edge · N active`, `Edge not running`, or `Edge not set up`.
+- **Honesty line (Routing Policy footer + Proxy Pool footer + panel ⓘ):** "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."
 
 ## Implemented additions (routing setup)
 
-- **Routing tab — Routing setup card** (between the policy section and the Edge panel): not installed → the opt-in explanation, a primary **Install Routing**, and a "What it writes" disclosure listing every path the installer touches (`relaydock-launch`, `relaydock-edge`, the `opencode` symlink — never replacing a non-symlink `opencode` — the launchd agent plist, and `edge.json`). Installed → a **Login agent** row, a **New terminals** row that reports the login shell's own answer (`zsh -lic 'command -v opencode'`) after a **Verify** click — resolving to the wrapper is a green check; a miss or a shadowing path shows the copyable `export PATH="$HOME/.local/bin:$PATH"` snippet — a copyable `opencode service stop && opencode service start` hint, and **Uninstall…** behind a confirmation dialog that lists exactly what is removed (agent, both binaries, symlink, `edge.json`; the proxy pool and Edge's script cache stay). Components that differ from the app's build light an orange "Update Components" row; a missing agent offers "Repair Install". The app never edits shell profiles, nothing runs unprompted, and the standalone `scripts/opencode-wrapper.sh install` still covers source checkouts and headless machines.
-- **RelayDock Edge section — "not configured" caption:** now points at the card ("Use the Routing setup card above to install it.") instead of the install script.
+- **Routing page — advanced setup section** (inside the **RelayDock Edge & routing setup** disclosure, below Policy): not installed → the opt-in explanation, a primary **Install Routing**, and a "What it writes" disclosure listing every path the installer touches (`relaydock-launch`, `relaydock-edge`, the `opencode` symlink — never replacing a non-symlink `opencode` — the launchd agent plist, and `edge.json`). Installed → a **Login agent** row, a **New terminals** row that reports the login shell's own answer (`zsh -lic 'command -v opencode'`) after a **Verify** click — resolving to the wrapper is a checkmark; a miss or a shadowing path shows the copyable `export PATH="$HOME/.local/bin:$PATH"` snippet — a copyable `opencode service stop && opencode service start` hint, and **Uninstall…** behind a confirmation dialog that lists exactly what is removed (agent, both binaries, symlink, `edge.json`; the proxy pool and Edge's script cache stay). Components that differ from the app's build light an ink "Update Components" row; a missing agent offers "Repair Install". The app never edits shell profiles, nothing runs unprompted, and the standalone `scripts/opencode-wrapper.sh install` still covers source checkouts and headless machines.
+- **Advanced Edge section — "not configured" caption:** now points at the setup rows ("Use the routing setup above to install it.") instead of the install script.
 
 ## Implemented refinements (menu bar panel)
 
-- **State anchor:** the panel leads with the same symbol, tint, headline, and consequence line as the Routing tab, from one shared source (`RoutingStatePresentation`) — a warning reads identically on both surfaces. Calm captions earn their line only when they inform: Manual's fail-closed promise, and Auto's "Unchecked proxies may be eligible." while an enabled proxy is unchecked.
+- **State anchor:** the panel leads with the same symbol, ink weight, headline, and consequence line as the Routing page, from one shared source (`RoutingStatePresentation`) — a warning reads identically on both surfaces. Calm captions earn their line only when they inform: Manual's fail-closed promise, and Auto's "Unchecked proxies may be eligible." while an enabled proxy is unchecked.
 - **Header:** no longer repeats the saved mode; the anchor and the segmented control already say it.
 - **Row freshness:** rows append a compact check age (`· 2m ago`, `1h ago`, `2d ago`) when the health timestamp is in the stored millisecond format; legacy seconds timestamps and in-progress test runs show none. Row tooltips and VoiceOver labels carry outcome, error, and age (`ProxyStatus.detail`).
-- **Chrome:** "Test All" gains a refresh glyph, the error banner's Dismiss is a link, the honesty line gains an info glyph, and section padding uses the 12-point rhythm.
+- **Chrome:** "Test All" gains a refresh glyph, the error banner's Dismiss is a link, the honesty line gains an info glyph, and panel padding uses the 12-point panel gutter.
 
-## Shared components (app design system)
+## Shared components (native app design system)
 
-Every surface draws its controls from one place — `Sources/RelayDockApp/AppComponents.swift` — so the menu bar panel, the window, and the sheets cannot drift apart:
+The native shell comes from SwiftUI itself — `NavigationSplitView`, sidebar `List`, toolbar, grouped `Form`, inset `List`, `ContentUnavailableView`, sheets, and alerts. Only the small pieces below are shared app code (`Sources/RelayDockApp/AppComponents.swift` and `AppTheme.swift`); `AppChrome.swift` has been removed and must not be restored.
 
-- **`AppLayout`:** one set of spacing rules. Side gutters: panel 14, window 22, sheets 20; one title-to-subtitle spacing (3); one status-glyph size (13).
-- **`AppActionRole` + `.appAction(_:size:)`:** the only way a button picks its look. `primary` (bordered prominent) is a surface's one forward action, `secondary` (bordered) supports it, and `link` is for inline tertiary affordances. Sizes follow the surface: `.large` for the panel's action row and CTAs, window headers, sheets, and empty-state calls to action; `.regular` inside forms and rows; `.small` for inline links. No manual padding or one-off `controlSize` on buttons; the one exception is a `ProgressView` spinner nested inside a button label (`.small`).
-- **`ModeSegmentedPicker`:** the Off/Manual/Auto control, identical on the panel and the Routing tab (same size, same tags).
-- **`AppTitle`:** surface titles (headline + caption subtitle) and modal titles (title2 + body subtitle) — one header shape per surface.
-- **`ProxyHealthIcon` and `ProxyStatusText`:** the row glyph and the pass/fail/excluded copy with its optional "· 2m ago" age, shared by the pool window and the menu bar panel (`ProxyStatus` supplies the words and colors).
-- **`HonestyFootnote`:** the honesty line's wording, glyph, and style, shared by the panel and the window footer.
+- **`AppLayout`:** panel gutter 12, sheet gutter 20, status-glyph size 13.
+- **`AppActionRole` + `.appAction(_:size:)`:** maps to native button styles. `primary` is `.borderedProminent`, `secondary` is `.bordered`, and `link` is `.link`. The system accent drives all three. Sizes follow the surface; no custom button chrome.
+- **`AppTheme`:** the remaining semantic tokens — `windowBackground`, `ink`, `inkMuted`, and `Motion.status` (0.16s ease-in-out for row glyph and counter changes). There is no app-specific card, topbar, pill, or button palette.
+- **`ProxyHealthIcon` and `ProxyStatusText`:** the row glyph and the pass/fail/excluded copy with its optional "· 2m ago" age, shared by the pool window and the menu bar panel (`ProxyStatus` supplies the words and ink weights).
+- **`VerificationInfoButton` and `AppCopy.verificationHonesty`:** the panel's ⓘ popover and the honesty line's one wording.
 
-Action weights in place: panel — secondary "Test All" and primary "Open RelayDock…" as equal-width halves; pool header — secondary "Test All" and primary "Import"; sheets — secondary "Cancel" and primary Add/Import/Save; empty states — one primary call to action ("Import Proxies").
+Action weights in place: toolbar — icon buttons for **Test All** and **Import Proxies**; panel — bordered "Test All" and prominent "Open RelayDock" as equal-width halves; sheets — bordered "Cancel" and prominent Add/Import/Save; empty states — one prominent call to action ("Import Proxies…").

@@ -23,8 +23,19 @@ struct RelayDockApp: App {
         Window("RelayDock", id: "main") {
             RootView(model: model)
         }
-        .defaultSize(width: 680, height: 460)
+        // The sidebar needs room to breathe; the detail still renders a full
+        // grouped form at the minimum content size (680×500).
+        .defaultSize(width: 760, height: 580)
         .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    Task { await model.updates.check(userInitiated: true) }
+                }
+                .disabled(model.updates.phase == .checking)
+            }
+        }
 
         MenuBarExtra {
             MenuBarPanelView(model: model)

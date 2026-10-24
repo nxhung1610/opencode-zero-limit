@@ -2,8 +2,8 @@ import AppKit
 import RelayDockCore
 import SwiftUI
 
-/// The Routing tab's setup card: install the PATH wrapper from the app, keep
-/// its components in step with this build, and verify that new terminals
+/// The Routing page's setup section: install the PATH wrapper from the app,
+/// keep its components in step with this build, and verify that new terminals
 /// resolve `opencode` to the wrapper. Nothing here edits shell profiles; the
 /// app only ever copies a snippet.
 struct RoutingSetupView: View {
@@ -21,7 +21,7 @@ struct RoutingSetupView: View {
             switch model.state {
             case .checking:
                 Text("Checking…")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             case .unavailable:
                 caption("This build has no bundled routing components; build with scripts/build-macos-app.sh to include them.")
@@ -32,8 +32,8 @@ struct RoutingSetupView: View {
             }
             if let errorMessage = model.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -54,18 +54,14 @@ struct RoutingSetupView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "terminal")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(headerTint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Routing setup")
-                    .font(.callout.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: 3) {
+            Label("Routing setup", systemImage: "terminal")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(needsAttention ? Color.primary : Color.secondary)
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(needsAttention ? Color.primary : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -88,15 +84,6 @@ struct RoutingSetupView: View {
         }
     }
 
-    private var headerTint: Color {
-        switch model.state {
-        case .checking, .unavailable, .notInstalled:
-            .secondary
-        case .installed:
-            needsAttention ? .orange : .green
-        }
-    }
-
     private var needsAttention: Bool {
         switch model.state {
         case .installed(let installation):
@@ -113,7 +100,7 @@ struct RoutingSetupView: View {
     private var notInstalledBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("RelayDock installs a small launcher into ~/.local/bin. New terminals launched afterwards route opencode through Edge; already-open terminals keep their current environment.")
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             installButton(title: "Install Routing")
@@ -135,7 +122,8 @@ struct RoutingSetupView: View {
                 Text(title)
             }
         }
-        .appAction(.primary, size: .large)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
         .disabled(model.activity != .idle)
     }
 
@@ -150,7 +138,7 @@ struct RoutingSetupView: View {
             }
             .padding(.top, 4)
         }
-        .font(.caption)
+        .font(.callout)
     }
 
     private func writtenPath(_ path: String, _ note: String) -> some View {
@@ -158,7 +146,7 @@ struct RoutingSetupView: View {
             Text(path)
                 .font(.caption.monospaced())
             Text(note)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -180,7 +168,7 @@ struct RoutingSetupView: View {
             }
             LabeledContent("Login agent") {
                 Text(installation.agentPlistInstalled ? "Installed" : "Missing")
-                    .foregroundStyle(installation.agentPlistInstalled ? Color.primary : Color.orange)
+                    .foregroundStyle(installation.agentPlistInstalled ? Color.secondary : Color.primary)
             }
             pathRow
             serviceHint
@@ -198,7 +186,8 @@ struct RoutingSetupView: View {
                         Text("Uninstall…")
                     }
                 }
-                .appAction(.secondary, size: .large)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
                 .disabled(model.activity != .idle)
             }
         }
@@ -207,14 +196,14 @@ struct RoutingSetupView: View {
     private func attentionRow(_ message: String, actionTitle: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.orange)
+                .font(.callout)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button(actionTitle) {
                 Task { await model.install() }
             }
-            .appAction(.secondary)
+            .buttonStyle(.bordered)
             .disabled(model.activity != .idle)
         }
     }
@@ -233,7 +222,7 @@ struct RoutingSetupView: View {
         case .ok:
             LabeledContent("New terminals") {
                 Label("opencode resolves to the wrapper", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.secondary)
             }
         case .notFound:
             pathWarning("New terminals don't find opencode yet. Add ~/.local/bin to PATH for new shells:")
@@ -245,8 +234,8 @@ struct RoutingSetupView: View {
     private func pathWarning(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.orange)
+                .font(.callout)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 Text(Self.pathSnippet)
@@ -273,14 +262,14 @@ struct RoutingSetupView: View {
                 Text("Verify")
             }
         }
-        .appAction(.link)
+        .buttonStyle(.link)
         .disabled(model.activity != .idle)
     }
 
     private var serviceHint: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("OpenCode's background service keeps its old environment until restarted — do this when no session is active:")
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
@@ -305,12 +294,12 @@ struct RoutingSetupView: View {
                 copied.wrappedValue = false
             }
         }
-        .appAction(.link)
+        .buttonStyle(.link)
     }
 
     private func caption(_ text: String) -> some View {
         Text(text)
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

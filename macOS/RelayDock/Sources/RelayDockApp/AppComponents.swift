@@ -8,13 +8,9 @@ import SwiftUI
 /// sheets sit in between.
 enum AppLayout {
     /// Side gutter inside the menu bar panel.
-    static let panelGutter: CGFloat = 14
-    /// Side gutter for window content (RootView footer, pool header and rows).
-    static let windowGutter: CGFloat = 22
+    static let panelGutter: CGFloat = 12
     /// Side gutter inside modal sheets.
     static let sheetGutter: CGFloat = 20
-    /// Title-to-subtitle spacing on every surface header.
-    static let titleSpacing: CGFloat = 3
     /// Point size for the small status glyphs shared by rows on all surfaces.
     static let statusGlyphSize: CGFloat = 13
 }
@@ -32,9 +28,8 @@ enum AppActionRole {
 }
 
 extension View {
-    /// App-standard button treatment. `size` follows the surface: `.large` for
-    /// surface actions, headers, sheets, and calls to action; `.regular` inside
-    /// forms and rows; `.small` for inline links.
+    /// Native macOS button treatment. The system accent drives interactive
+    /// controls; only status text and glyphs stay monochrome.
     @ViewBuilder
     func appAction(_ role: AppActionRole, size: ControlSize = .regular) -> some View {
         switch role {
@@ -48,69 +43,21 @@ extension View {
     }
 }
 
+// MARK: - Copy
+
+/// Copy that must say the same thing on every surface.
+enum AppCopy {
+    static let verificationHonesty = "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible."
+}
+
 // MARK: - Shared views
-
-/// A surface's leading title and optional subtitle/count line. `surface`
-/// heads a panel or window section; `modal` heads a sheet.
-struct AppTitle: View {
-    enum Style {
-        case surface
-        case modal
-    }
-
-    var title: String
-    var subtitle: String?
-    var style: Style = .surface
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: AppLayout.titleSpacing) {
-            Text(title)
-                .font(style == .surface ? .headline : .title2.weight(.semibold))
-            if let subtitle {
-                Text(subtitle)
-                    .font(style == .surface ? .caption : .body)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-}
-
-/// The Off/Manual/Auto control, identical on both surfaces.
-struct ModeSegmentedPicker: View {
-    @Binding var mode: ProxyMode
-    var size: ControlSize = .large
-
-    var body: some View {
-        Picker("Proxy Mode", selection: $mode) {
-            Text("Off").tag(ProxyMode.off)
-            Text("Manual").tag(ProxyMode.manual)
-            Text("Auto").tag(ProxyMode.auto)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(size)
-    }
-}
-
-/// The honesty line — one wording, one icon, one style, on every surface.
-struct HonestyFootnote: View {
-    var body: some View {
-        Label(
-            "RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.",
-            systemImage: "info.circle"
-        )
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-}
 
 /// The one status glyph for a proxy row: failed / untested / disabled /
 /// passed. Shared by the menu bar panel and the pool window so the two can
 /// never drift apart.
 struct ProxyHealthIcon: View {
     var proxy: ProxyEntry
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -120,7 +67,7 @@ struct ProxyHealthIcon: View {
                     .accessibilityLabel("Disabled")
             } else if let health = proxy.health {
                 Image(systemName: health.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundStyle(health.ok ? Color.green : Color.orange)
+                    .foregroundStyle(health.ok ? Color.secondary : Color.primary)
                     .accessibilityLabel(health.ok ? "Last test passed" : "Last test failed")
             } else {
                 Image(systemName: "questionmark.circle")
@@ -129,24 +76,32 @@ struct ProxyHealthIcon: View {
             }
         }
         .font(.system(size: AppLayout.statusGlyphSize, weight: .semibold))
+        .contentTransition(.opacity)
+        .animation(reduceMotion ? nil : AppTheme.Motion.status, value: proxy.enabled)
+        .animation(reduceMotion ? nil : AppTheme.Motion.status, value: proxy.health?.ok)
     }
 }
 
 /// The pass/fail/excluded line for a proxy row, with the optional
 /// "· 2m ago" suffix. The menu bar panel and the pool window both use it so
-/// the copy, color, and age formatting cannot diverge.
+/// the copy, ink weight, and age formatting cannot diverge.
 struct ProxyStatusText: View {
     var proxy: ProxyEntry
     var mode: ProxyMode
     var isTesting: Bool
     var showsAge = true
     var font: Font = .footnote
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(ProxyStatus.text(for: proxy, mode: mode, isTesting: isTesting))
+        let text = ProxyStatus.text(for: proxy, mode: mode, isTesting: isTesting)
+
+        return HStack(spacing: 4) {
+            Text(text)
                 .monospacedDigit()
                 .foregroundStyle(ProxyStatus.color(for: proxy, isTesting: isTesting))
+                .contentTransition(.opacity)
+                .animation(reduceMotion ? nil : AppTheme.Motion.status, value: text)
             if showsAge, let age = ageSuffix {
                 Text("· \(age)")
                     .foregroundStyle(.tertiary)
@@ -160,5 +115,32 @@ struct ProxyStatusText: View {
     private var ageSuffix: String? {
         guard !isTesting, proxy.enabled else { return nil }
         return ProxyStatus.checkedAgo(for: proxy)
+    }
+}
+
+/// The honesty line, reduced to one control so it stays available without
+/// repeating a full sentence on every surface.
+struct VerificationInfoButton: View {
+    var text: String
+    @State private var showsText = false
+
+    var body: some View {
+        Button {
+            showsText.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showsText, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+                .frame(width: 300)
+        }
+        .accessibilityLabel("About verification")
     }
 }

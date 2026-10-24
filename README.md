@@ -74,7 +74,7 @@ The app deliberately does not launch or restart OpenCode, and it cannot set prox
   <img width="680" alt="The Proxy Pool tab: four entries with health states, per-row toggles, and Test All / Import actions." src="docs/images/pool-list-light.png">
 </picture>
 
-**Menu bar.** The panel is the everyday surface: the saved mode, Edge's live line, pool health at a glance, quick actions, and the update footer.
+**Menu bar.** The panel is the everyday surface: saved mode, Edge's upstream and aggregate active-tunnel count, pool health, quick actions, and the update footer. The count includes all Edge clients; open the Routing tab for recent per-process attribution.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
@@ -91,9 +91,9 @@ The app deliberately does not launch or restart OpenCode, and it cannot set prox
 - Preserve existing proxy data at `~/Library/Application Support/com.nxhung.opencodezerolimit/proxies.json` with restrictive file permissions.
 - Provide `RelayDockCore` helpers for consumers that launch their own child process and need to select a route and construct proxy environment variables.
 - Optionally install a PATH wrapper — **Install Routing** in the app's *Routing setup* card, or `scripts/opencode-wrapper.sh install` from a source checkout — so new terminal `opencode` launches run through **RelayDock Edge**: a loopback daemon that performs script resolution live, rotates the upstream when a dial fails, keeps one provider cooldown budget, and persists one script cache. The installer also bootstraps a launchd KeepAlive agent (crash restarts within seconds; clean exits never respawn-loop; with an `edge.json` present the agent also declares launchd `Sockets`, so Edge starts on the first connection). Fail-closed on routing errors unless the pool's Direct fallback is enabled; Off mode never contacts Edge.
-- Show Edge's live status in the app: a RelayDock Edge section on the Routing tab and a compact line in the menu bar panel — mode, upstream with expiry, rotation/failure counters, provider cooldown, and recent tunnels attributed to the peer process that opened them. `Test All` delegates health checks to Edge (the owner of the script cache) and falls back in-process, labeled in the pool view, only when Edge is unreachable.
+- Show Edge's live status in the app: the Routing tab reports the upstream with expiry, rotation/failure counters, provider cooldown, and recent tunnels attributed to the peer process that opened them. The compact menu-bar line shows the mode, upstream, and aggregate active-tunnel count. `Test All` delegates health checks to Edge (the owner of the script cache) and falls back in-process, labeled in the pool view, only when Edge is unreachable.
 
-A successful endpoint check only reports that the configured proxy endpoint passed that check. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy — only Edge's tunnel accounting speaks to real traffic, and it says nothing about traffic that bypasses Edge: **RelayDock verifies traffic that routes through Edge; direct traffic stays invisible.**
+A successful proxy check only establishes that the configured proxy passed its connectivity probe: RelayDock sends a request through it to `https://www.gstatic.com/generate_204` and treats a 2xx response as a pass. It does not call OpenCode or verify provider authentication, model access, or account quota. Neither a saved policy nor a successful check proves that OpenCode traffic used a proxy — only Edge's tunnel accounting speaks to traffic it served. The Routing tab attributes recent tunnels to their peer process; the menu-bar active-tunnel count is aggregate. Traffic that bypasses Edge stays invisible.
 
 ## How it works
 

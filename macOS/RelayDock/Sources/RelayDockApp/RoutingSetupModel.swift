@@ -3,10 +3,10 @@ import CryptoKit
 import Foundation
 import RelayDockCore
 
-/// The Routing tab's setup card: whether the PATH wrapper is installed,
+/// The Routing page's setup section: whether the PATH wrapper is installed,
 /// whether its components still match this build's bundled pair, and the
 /// actions that change it. The app never edits shell profiles — the PATH
-/// snippet is copyable text, and the only shell the card runs is the
+/// snippet is copyable text, and the only shell the section runs is the
 /// user-clicked Verify.
 @MainActor
 final class RoutingSetupModel: ObservableObject {

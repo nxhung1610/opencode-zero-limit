@@ -42,10 +42,10 @@ import Testing
         #expect(ProxyStatus.healthSummary(for: proxy) == "Passed · 42 ms")
     }
 
-    @Test func colorTracksFailure() {
-        #expect(ProxyStatus.color(for: entry(health: ProxyHealth(ok: false)), isTesting: false) == .orange)
-        #expect(ProxyStatus.color(for: entry(health: ProxyHealth(ok: true)), isTesting: false) == .secondary)
-        #expect(ProxyStatus.color(for: entry(enabled: false, health: ProxyHealth(ok: false)), isTesting: false) == .secondary)
+    @Test func inkWeightTracksFailure() {
+        #expect(ProxyStatus.color(for: entry(health: ProxyHealth(ok: false)), isTesting: false) == AppTheme.ink)
+        #expect(ProxyStatus.color(for: entry(health: ProxyHealth(ok: true)), isTesting: false) == AppTheme.inkMuted)
+        #expect(ProxyStatus.color(for: entry(enabled: false, health: ProxyHealth(ok: false)), isTesting: false) == AppTheme.inkMuted)
     }
 
     @Test func checkedAgoReadsMillisecondTimestamps() {

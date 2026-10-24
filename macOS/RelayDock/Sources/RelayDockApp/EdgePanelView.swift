@@ -1,7 +1,7 @@
 import RelayDockCore
 import SwiftUI
 
-/// The Routing tab's RelayDock Edge status: live daemon state, the upstream
+/// The Routing page's RelayDock Edge status: live daemon state, the upstream
 /// Edge is serving, counters, and service attribution for recent tunnels.
 /// Everything here comes from `/__relaydock/status` — Edge's own accounting
 /// is the only traffic the app can honestly speak to.
@@ -58,10 +58,10 @@ struct EdgePanelView: View {
             switch model.edgePanel {
             case .unknown:
                 Text("Checking…")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             case .notConfigured:
-                caption("RelayDock Edge is not installed. Use the Routing setup card above to install it.")
+                caption("RelayDock Edge is not installed. Use the routing setup above to install it.")
             case .notRunning:
                 caption("RelayDock Edge is not running. It starts on demand at the next wrapped launch.")
             case .running(let status):
@@ -77,14 +77,14 @@ struct EdgePanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(color)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.callout.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                 if let subtitle {
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -102,8 +102,8 @@ struct EdgePanelView: View {
 
     private var color: Color {
         switch model.edgePanel {
-        case .running: .green
-        case .notConfigured: .orange
+        case .running: Color.secondary
+        case .notConfigured: Color.primary
         case .unknown, .notRunning: .secondary
         }
     }
@@ -152,13 +152,13 @@ struct EdgePanelView: View {
         if status.counters.dialFailures + status.counters.streamFailures > 0 {
             LabeledContent("Failures") {
                 Text(failureLine(status.counters))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.primary)
             }
         }
         if status.counters.directFallbacks > 0 {
             LabeledContent("Direct fallbacks") {
                 Text("\(status.counters.directFallbacks) tunnel\(status.counters.directFallbacks == 1 ? "" : "s") connected directly")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.primary)
             }
         }
         if let lastError = status.lastErrors.last {
@@ -175,20 +175,20 @@ struct EdgePanelView: View {
             switch OpenCodeTrafficEvidence.resolve(from: status) {
             case .routingOff:
                 Label("Routing is Off; proxying is disabled.", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.primary)
             case .notObserved:
                 Label(
                     "No OpenCode traffic observed through a proxy yet. Make a fresh model request to verify.",
                     systemImage: "questionmark.circle"
                 )
-                .foregroundStyle(.orange)
+                .foregroundStyle(.primary)
             case .observed(let lastSeen):
                 if Date().timeIntervalSince1970 - lastSeen <= 300 {
                     Label(
                         "OpenCode traffic seen through a proxy \(relativeTime(lastSeen)).",
                         systemImage: "checkmark.circle.fill"
                     )
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.secondary)
                 } else {
                     Label(
                         "Last OpenCode proxy tunnel \(relativeTime(lastSeen)); no recent traffic to verify.",
@@ -198,7 +198,7 @@ struct EdgePanelView: View {
                 }
             }
         }
-        .font(.caption)
+        .font(.callout)
         .fixedSize(horizontal: false, vertical: true)
         .help("This reflects only tunnels Edge served. Traffic that bypasses Edge cannot be observed here.")
     }
@@ -239,10 +239,10 @@ struct EdgePanelView: View {
                         Text(relativeTime(peer.lastActivity))
                             .foregroundStyle(.secondary)
                     }
-                    .font(.caption)
+                    .font(.callout)
                 }
             }
-            .font(.caption)
+            .font(.callout)
         }
     }
 
@@ -265,7 +265,7 @@ struct EdgePanelView: View {
 
     private func caption(_ text: String) -> some View {
         Text(text)
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(.secondary)
     }
 
