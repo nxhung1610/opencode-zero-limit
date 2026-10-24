@@ -19,8 +19,6 @@
   <rect width="660" height="420" fill="url(#glow)"/>
   <ellipse cx="330" cy="214" rx="190" ry="74" fill="url(#halo)"/>
 
-  <rect x="12.5" y="12.5" width="635" height="395" rx="18" fill="none" stroke="#111827" stroke-opacity="0.055"/>
-
   <text x="330" y="190" text-anchor="middle" font-family="Avenir Next, Helvetica Neue, sans-serif" font-size="11" font-weight="600" fill="#111827" letter-spacing="0.2">Drag to Applications</text>
   <path d="M 262 214 H 396" fill="none" stroke="#111827" stroke-opacity="0.32" stroke-width="2" stroke-linecap="round" stroke-dasharray="0.1 7"/>
   <path d="M 386 204 L 398 214 L 386 224" fill="none" stroke="#111827" stroke-opacity="0.78" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
