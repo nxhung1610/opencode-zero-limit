@@ -24,6 +24,22 @@ MOUNT="$WORK/$LAYOUT_VOLUME_NAME"
 RW_DMG="$WORK/RelayDock-rw.dmg"
 LAYOUT_SCRIPT="$WORK/layout.applescript"
 
+# Finder and Spotlight can hold a freshly written image for a moment after the
+# layout pass. Retry the polite detach so the image flushes cleanly, and force
+# it only when the volume stays busy.
+detach_volume() {
+  local mount="$1"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if hdiutil detach "$mount" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Volume stayed busy; forcing detach of $mount." >&2
+  hdiutil detach "$mount" -force >/dev/null
+}
+
 cleanup() {
   hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true
   rm -rf "$WORK"
@@ -82,7 +98,7 @@ sync
 # Use a unique name while Finder works on the image, then give the finished
 # volume the public name. This avoids targeting another mounted RelayDock.dmg.
 diskutil rename "$MOUNT" "$VOLUME_NAME" >/dev/null
-hdiutil detach "$MOUNT" >/dev/null
+detach_volume "$MOUNT"
 hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$OUTPUT" >/dev/null
 
 test -s "$OUTPUT"
@@ -94,6 +110,6 @@ test -d "$MOUNT/RelayDock.app/Contents/MacOS"
 test -L "$MOUNT/Applications"
 test -f "$MOUNT/.background/dmg-background.png"
 test -f "$MOUNT/.VolumeIcon.icns"
-hdiutil detach "$MOUNT" >/dev/null
+detach_volume "$MOUNT"
 
 echo "Built $OUTPUT"
