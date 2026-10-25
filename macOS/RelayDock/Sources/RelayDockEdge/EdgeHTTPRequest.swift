@@ -67,8 +67,12 @@ struct EdgeHTTPRequest: Equatable {
             guard let port = components.port.map({ UInt16(exactly: $0) }) ?? 80, port > 0 else {
                 return make(.invalid(reason: "The request target carries an invalid port."))
             }
-            let path = components.path.isEmpty ? "/" : components.path
-            let withQuery = components.query.map { "\(path)?\($0)" } ?? path
+            // Keep the encoded form: `path`/`query` decode `%2F` into `/`,
+            // which changes the resource the upstream sees. Foundation still
+            // normalizes malformed escapes and raw characters, so an invalid
+            // target is re-encoded rather than forwarded as a broken line.
+            let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+            let withQuery = components.percentEncodedQuery.map { "\(path)?\($0)" } ?? path
             return make(.forward(method: method, scheme: scheme, host: rawHost, port: port, path: withQuery))
         }
 
@@ -82,13 +86,13 @@ struct EdgeHTTPRequest: Equatable {
             let host = String(value[value.index(after: value.startIndex)..<close])
             let rest = value[value.index(after: close)...]
             if rest.isEmpty { return defaultPort.map { (host, $0) } }
-            guard rest.hasPrefix(":"), let port = UInt16(rest.dropFirst()) else { return nil }
+            guard rest.hasPrefix(":"), let port = UInt16(rest.dropFirst()), port > 0 else { return nil }
             return (host, port)
         }
         if let colon = value.lastIndex(of: ":") {
             let host = String(value[..<colon])
             let portText = value[value.index(after: colon)...]
-            guard !host.isEmpty, let port = UInt16(portText) else { return nil }
+            guard !host.isEmpty, let port = UInt16(portText), port > 0 else { return nil }
             return (host, port)
         }
         return defaultPort.map { (value, $0) }

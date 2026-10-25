@@ -26,6 +26,16 @@ struct EdgeHTTPRequestTests {
         }
     }
 
+    @Test func rejectsConnectToPortZero() throws {
+        for target in ["example.com:0", "[::1]:0"] {
+            let request = try #require(parse("CONNECT \(target) HTTP/1.1\r\n\r\n"))
+            guard case .invalid = request.kind else {
+                Issue.record("CONNECT \(target) must be rejected")
+                return
+            }
+        }
+    }
+
     @Test func parsesAbsoluteFormForwardTargets() throws {
         let request = try #require(parse("GET http://example.com:8080/a?b=c HTTP/1.1\r\nHost: example.com\r\n\r\n"))
         #expect(request.kind == .forward(method: "GET", scheme: "http", host: "example.com", port: 8080, path: "/a?b=c"))
@@ -34,6 +44,38 @@ struct EdgeHTTPRequestTests {
     @Test func defaultsPlainHTTPPortTo80() throws {
         let request = try #require(parse("GET http://example.com/ HTTP/1.1\r\n\r\n"))
         #expect(request.kind == .forward(method: "GET", scheme: "http", host: "example.com", port: 80, path: "/"))
+    }
+
+    @Test func preservesPercentEncodedForwardTargets() throws {
+        let request = try #require(parse(
+            "GET http://example.com/a%2Fb/%20c?q=x%2Fy&r=1%2B2&s=a+b HTTP/1.1\r\n\r\n"
+        ))
+        #expect(request.kind == .forward(
+            method: "GET",
+            scheme: "http",
+            host: "example.com",
+            port: 80,
+            path: "/a%2Fb/%20c?q=x%2Fy&r=1%2B2&s=a+b"
+        ))
+        let head = String(data: request.originForwardHead(upstreamAuthorization: nil), encoding: .utf8) ?? ""
+        #expect(head.hasPrefix("GET /a%2Fb/%20c?q=x%2Fy&r=1%2B2&s=a+b HTTP/1.1\r\n"))
+    }
+
+    @Test func keepsEmptyPathsAndBareQuestionMarksStable() throws {
+        let bareHost = try #require(parse("GET http://example.com HTTP/1.1\r\n\r\n"))
+        #expect(bareHost.kind == .forward(method: "GET", scheme: "http", host: "example.com", port: 80, path: "/"))
+
+        let emptyQuery = try #require(parse("GET http://example.com/a? HTTP/1.1\r\n\r\n"))
+        #expect(emptyQuery.kind == .forward(method: "GET", scheme: "http", host: "example.com", port: 80, path: "/a?"))
+    }
+
+    @Test func malformedPercentEscapesAreReencodedNotForwardedRaw() throws {
+        let request = try #require(parse("GET http://example.com/100% HTTP/1.1\r\n\r\n"))
+        guard case .forward(_, _, _, _, let path) = request.kind else {
+            Issue.record("a malformed escape must still produce a forward target")
+            return
+        }
+        #expect(path == "/100%25")
     }
 
     @Test func rejectsAbsoluteHTTPSWithoutConnect() throws {
@@ -92,6 +134,8 @@ struct EdgeHTTPRequestTests {
         #expect(EdgeHTTPRequest.splitHostPort("2606:4700::1111:443", defaultPort: nil)?.host == "2606:4700::1111")
         #expect(EdgeHTTPRequest.splitHostPort("2606:4700::1111:443", defaultPort: nil)?.port == 443)
         #expect(EdgeHTTPRequest.splitHostPort(":443", defaultPort: nil) == nil)
+        #expect(EdgeHTTPRequest.splitHostPort("example.com:0", defaultPort: nil) == nil)
+        #expect(EdgeHTTPRequest.splitHostPort("[::1]:0", defaultPort: nil) == nil)
     }
 
     @Test func originForwardHeadRewritesTheRequestLineAndDropsProxyHeaders() throws {
