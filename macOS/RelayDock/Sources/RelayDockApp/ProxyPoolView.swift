@@ -103,6 +103,13 @@ struct ProxyPoolView: View {
                             removalTarget: $removalTarget,
                             editTarget: $editTarget
                         )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                removalTarget = proxy
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
                     }
                 } header: {
                     HStack(spacing: 8) {
