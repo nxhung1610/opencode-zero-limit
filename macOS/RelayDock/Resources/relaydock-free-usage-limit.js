@@ -1,7 +1,16 @@
 // RelayDock-managed plugin. RelayDock regenerates this file during install.
 
-const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const DAY_MS = 86_400_000;
 const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+// OpenCode's free-usage counters reset at 00:00 UTC, not 24 hours after the
+// error. When the provider does not supply an explicit retry window, wait
+// only until the next UTC midnight instead of over-quarantining for a full
+// day (a limit seen at 23:59 should clear in a minute, not tomorrow night).
+function defaultCooldownMs(now = Date.now()) {
+  const remainder = ((now % DAY_MS) + DAY_MS) % DAY_MS;
+  return remainder === 0 ? DAY_MS : DAY_MS - remainder;
+}
 
 function parseJSON(value) {
   if (typeof value !== "string" || value.length > 256 * 1024) return undefined;
@@ -87,7 +96,7 @@ function retryAfterMs(error, now = Date.now()) {
       }
     }
   }
-  return DEFAULT_COOLDOWN_MS;
+  return defaultCooldownMs(now);
 }
 
 function edgePortFromEnvironment() {
@@ -150,6 +159,9 @@ async function handleEvent(event) {
 export const RelayDockFreeUsageLimit = async () => ({
   event: async ({ event }) => handleEvent(event),
 });
+
+// Exposed for the repository's Node regression test; OpenCode ignores it.
+export { defaultCooldownMs };
 
 export default {
   id: "relaydock-free-usage-limit",

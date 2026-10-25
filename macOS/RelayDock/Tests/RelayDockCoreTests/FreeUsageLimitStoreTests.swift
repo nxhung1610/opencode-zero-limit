@@ -41,6 +41,25 @@ struct FreeUsageLimitStoreTests {
         ]), now: 1_000).proxies[0].freeUsageLimitedUntil == 2_000)
     }
 
+    @Test func successfulProbeClearsOnlyTheCooldownItObserved() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-usage-clear-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let limits = FreeUsageLimitStore(configDirectory: directory)
+        try limits.flag("px_a", until: 2_000)
+        try limits.flag("px_b", until: 3_000)
+
+        #expect(try limits.clear("px_a", ifDeadlineMatches: 2_000))
+        #expect(try !limits.clear("px_b", ifDeadlineMatches: 2_500))
+        let state = ProxyState(proxies: [
+            ProxyEntry(id: "px_a", label: "A", url: "http://a.example:80"),
+            ProxyEntry(id: "px_b", label: "B", url: "http://b.example:80"),
+        ])
+        let updated = limits.applying(to: state, now: 1_000)
+        #expect(updated.proxies[0].freeUsageLimitedUntil == nil)
+        #expect(updated.proxies[1].freeUsageLimitedUntil == 3_000)
+    }
+
     @Test func manualSpawnRefusesALimitedProxyUntilItsDeadline() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-free-usage-manual-\(UUID().uuidString)", directoryHint: .isDirectory)

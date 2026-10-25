@@ -156,7 +156,7 @@ struct ProxyAppModelTests {
         #expect(health?.latencyMs == 42)
     }
 
-    @Test @MainActor func testAllRunsOpenCodeFreeUsageProbeOnlyForHealthyEnabledEntries() async throws {
+    @Test @MainActor func testAllReprobesLimitedEntriesButSkipsFailedAndDisabledEntries() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
         let imported = try store.importProxies(
@@ -190,12 +190,132 @@ struct ProxyAppModelTests {
 
         await model.testAll()
 
-        #expect(recorder.records == [
-            .init(entryID: healthyID, proxyURL: "http://healthy.example:8080", port: 57_211, model: "opencode/beam-free"),
-        ])
+        #expect(Set(recorder.records.map(\.entryID)) == Set([healthyID, limitedID]))
+        #expect(recorder.records.allSatisfy { $0.port == 57_211 && $0.model == "opencode/beam-free" })
         #expect(model.state?.proxies.first(where: { $0.id == healthyID })?.isFreeUsageLimited() == true)
+        #expect(model.state?.proxies.first(where: { $0.id == limitedID })?.isFreeUsageLimited() == false)
         #expect(model.state?.proxies.first(where: { $0.id == disabledID })?.enabled == false)
         #expect(model.state?.proxies.first(where: { $0.id == disabledID })?.isFreeUsageLimited() == false)
+    }
+
+    @Test @MainActor func retryFreeUsageClearsACooldownOnlyWhenTheProbePasses() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://limited.example:8080")
+        let entryID = imported.proxies[0].id
+        try writeEdgeConfig(in: directory)
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(entryID, until: Date().timeIntervalSince1970 + 3_600)
+        let recorder = OpenCodeProbeRecorder()
+        let model = ProxyAppModel(
+            store: store,
+            freeModelProvider: { "opencode/beam-free" },
+            freeUsageProbe: { entry, proxyURL, config, probeModel in
+                recorder.record(entryID: entry.id, proxyURL: proxyURL, port: config.port, model: probeModel)
+                return .passed
+            }
+        )
+        model.load()
+        #expect(model.state?.proxies[0].isFreeUsageLimited() == true)
+
+        await model.retryFreeUsage(for: entryID)
+
+        #expect(recorder.records.map(\.entryID) == [entryID])
+        #expect(model.state?.proxies[0].isFreeUsageLimited() == false)
+        #expect(model.freeUsageRetryMessages[entryID]?.contains("back in rotation") == true)
+    }
+
+    @Test @MainActor func retryFreeUsageKeepsTheCooldownWhenTheProbeStillReportsALimit() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://limited.example:8080")
+        let entryID = imported.proxies[0].id
+        try writeEdgeConfig(in: directory)
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(entryID, until: Date().timeIntervalSince1970 + 3_600)
+        let model = ProxyAppModel(
+            store: store,
+            freeModelProvider: { "opencode/beam-free" },
+            freeUsageProbe: { _, _, _, _ in .freeUsageLimited(retryAfterMs: 7_200_000) }
+        )
+        model.load()
+
+        await model.retryFreeUsage(for: entryID)
+
+        #expect(model.state?.proxies[0].isFreeUsageLimited() == true)
+        #expect(model.freeUsageRetryMessages[entryID]?.contains("still limited") == true)
+    }
+
+    @Test @MainActor func automaticReprobeRunsOnlyNearResetAndOncePerCooldown() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://soon.example:8080\nhttp://later.example:8080")
+        let soonID = imported.proxies[0].id
+        let laterID = imported.proxies[1].id
+        try writeEdgeConfig(in: directory)
+        _ = try store.setMode(.auto, manualId: nil)
+        let now = Date()
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(soonID, until: now.timeIntervalSince1970 + 600)
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(laterID, until: now.timeIntervalSince1970 + 3 * 3_600)
+        let recorder = OpenCodeProbeRecorder()
+        let model = ProxyAppModel(
+            store: store,
+            freeModelProvider: { "opencode/beam-free" },
+            freeUsageProbe: { entry, proxyURL, config, probeModel in
+                recorder.record(entryID: entry.id, proxyURL: proxyURL, port: config.port, model: probeModel)
+                return .passed
+            }
+        )
+        model.load()
+
+        await model.reprobeFreeUsageIfDue(now: now)
+
+        #expect(recorder.records.map(\.entryID) == [soonID])
+        #expect(model.state?.proxies.first(where: { $0.id == soonID })?.isFreeUsageLimited() == false)
+        #expect(model.state?.proxies.first(where: { $0.id == laterID })?.isFreeUsageLimited() == true)
+
+        // The interval gate blocks the same check on the next poll tick.
+        await model.reprobeFreeUsageIfDue(now: now.addingTimeInterval(60))
+        #expect(recorder.records.count == 1)
+
+        // The entry with hours left is not probed just because the interval
+        // elapsed; only a reset that is actually close qualifies.
+        await model.reprobeFreeUsageIfDue(now: now.addingTimeInterval(601))
+        #expect(recorder.records.count == 1)
+
+        let laterDeadline = now.timeIntervalSince1970 + 3 * 3_600
+        await model.reprobeFreeUsageIfDue(now: Date(timeIntervalSince1970: laterDeadline - 300))
+        #expect(recorder.records.map(\.entryID) == [soonID, laterID])
+        #expect(model.state?.proxies.first(where: { $0.id == laterID })?.isFreeUsageLimited() == false)
+    }
+
+    @Test @MainActor func sharedFreeUsageWarningRequiresClusteredDeadlines() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        let now = Date().timeIntervalSince1970
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(imported.proxies[0].id, until: now + 3_600)
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(imported.proxies[1].id, until: now + 3_780)
+        let clustered = ProxyAppModel(store: store)
+        clustered.load()
+
+        #expect(clustered.sharedFreeUsageLimitWarning?.contains("2 proxies") == true)
+
+        let (spreadDirectory, spreadStore) = makeStore()
+        defer { try? FileManager.default.removeItem(at: spreadDirectory) }
+        let spread = try spreadStore.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        try FreeUsageLimitStore(configDirectory: spreadDirectory)
+            .flag(spread.proxies[0].id, until: now + 3_600)
+        try FreeUsageLimitStore(configDirectory: spreadDirectory)
+            .flag(spread.proxies[1].id, until: now + 7_200)
+        let spreadModel = ProxyAppModel(store: spreadStore)
+        spreadModel.load()
+
+        #expect(spreadModel.sharedFreeUsageLimitWarning == nil)
     }
 
     @Test @MainActor func testAllRunsQuotaProbesInParallelAndUpdatesRowsAsTheyFinish() async throws {
@@ -284,6 +404,35 @@ struct ProxyAppModelTests {
 
         #expect(cooldown == 3_600_000)
         #expect(OpenCodeFreeUsageProbe.freeUsageLimitCooldown(in: "request completed") == nil)
+    }
+
+    @Test func freeUsageLimitFallbackWaitsUntilUTCMidnight() {
+        // 2026-10-25T23:59:00Z, 23:59:59.500Z, 2026-10-26T00:00:00Z, noon UTC.
+        let cases: [(now: Double, expected: Double)] = [
+            (1_792_972_740_000, 60_000),
+            (1_792_972_799_500, 1_000),
+            (1_792_972_800_000, 86_400_000),
+            (1_792_929_600_000, 43_200_000),
+        ]
+        for testCase in cases {
+            let cooldown = OpenCodeFreeUsageProbe.freeUsageLimitCooldown(
+                in: #"{"error":{"name":"FreeUsageLimitError"}}"#,
+                nowMilliseconds: testCase.now
+            )
+            #expect(cooldown == testCase.expected)
+        }
+    }
+
+    @Test func freeUsageLimitStructuredCooldownWinsAndPastResetClampsToOneSecond() {
+        #expect(OpenCodeFreeUsageProbe.freeUsageLimitCooldown(
+            in: #"{"error":{"name":"FreeUsageLimitError","retryAfter":3600}}"#,
+            nowMilliseconds: 1_000
+        ) == 3_600_000)
+        #expect(OpenCodeFreeUsageProbe.freeUsageLimitCooldown(
+            in: #"{"error":{"name":"FreeUsageLimitError","resetAtMs":1000}}"#,
+            nowMilliseconds: 2_000
+        ) == 1_000)
+        #expect(OpenCodeFreeUsageProbe.defaultCooldownMilliseconds(nowMilliseconds: 0) == 86_400_000)
     }
 
     @Test func liveFreeUsageProbeUsesAnIsolatedLoopbackEdgePinnedToTheTarget() async {

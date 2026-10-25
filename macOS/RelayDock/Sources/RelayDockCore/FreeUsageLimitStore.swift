@@ -47,6 +47,30 @@ public struct FreeUsageLimitStore: Sendable {
         return effectiveDeadline
     }
 
+    /// Clears a cooldown only if it is still the deadline observed when its
+    /// successful quota probe began. A newer limit recorded during that probe
+    /// must remain in force.
+    @discardableResult
+    public func clear(_ entryID: String, ifDeadlineMatches expectedDeadline: Double) throws -> Bool {
+        guard !entryID.isEmpty, expectedDeadline.isFinite, expectedDeadline > 0 else {
+            throw FreeUsageLimitStoreError.invalidDeadline
+        }
+        var deadlines = readDeadlines()
+        guard deadlines[entryID] == expectedDeadline else { return false }
+        deadlines.removeValue(forKey: entryID)
+        let manager = FileManager.default
+        let directory = fileURL.deletingLastPathComponent()
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var data = try encoder.encode(deadlines)
+        data.append(0x0A)
+        try data.write(to: fileURL, options: .atomic)
+        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        return true
+    }
+
     public var modificationDate: Date? {
         (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate]) as? Date
     }

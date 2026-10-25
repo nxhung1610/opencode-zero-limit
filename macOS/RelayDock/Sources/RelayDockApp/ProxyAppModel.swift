@@ -39,6 +39,13 @@ final class ProxyAppModel: ObservableObject {
     @Published private(set) var loadError: String?
     @Published private(set) var isTesting = false
     @Published private(set) var freeUsageProbeStatuses: [String: FreeUsageProbeStatus] = [:]
+    /// Entries with a user-initiated quota retry in flight. Kept separate from
+    /// `isTesting` so one paused row can be retried while the rest of the pool
+    /// stays interactive.
+    @Published private(set) var retryingFreeUsageIDs: Set<String> = []
+    /// One-line outcome of the last manual or automatic quota retry, shown in
+    /// the row details. The row status still owns the cooldown itself.
+    @Published private(set) var freeUsageRetryMessages: [String: String] = [:]
     @Published var isManualChooserPresented = false
     @Published private(set) var errorMessage: String?
     /// A calm note about what the last Test All skipped — a script entry with
@@ -71,6 +78,15 @@ final class ProxyAppModel: ObservableObject {
     private var routingProbeTask: Task<OpenCodeRoutingSnapshot, Never>?
     private var modeChangeID = UUID()
     private var modeChangeSource: RoutingChangeSource?
+    /// Automatic quota rechecks are deliberately rare and only run close to
+    /// the reset: repeated probes through a limited egress path look like
+    /// retry abuse to the provider and can extend the cooldown they are
+    /// trying to clear.
+    private static let freeUsageReprobeInterval: TimeInterval = 10 * 60
+    static let freeUsageReprobeLeadTime: TimeInterval = 15 * 60
+    private var lastFreeUsageReprobeAt: TimeInterval = 0
+    private var reprobedFreeUsageDeadlines: [String: Double] = [:]
+    private var freeUsageReprobeTask: Task<Void, Never>?
 
     init(
         store: ProxyStore = ProxyStore(),
@@ -353,7 +369,7 @@ final class ProxyAppModel: ObservableObject {
             await runInAppChecks()
             refreshProxyStateFromDisk()
             if (state?.proxies ?? []).contains(where: {
-                $0.enabled && $0.hasValidDefinition && $0.health?.ok == true && !$0.isFreeUsageLimited()
+                $0.enabled && $0.hasValidDefinition && $0.health?.ok == true
             }) {
                 let reason = edgeConfig == nil ? "RelayDock Edge is not configured" : "RelayDock Edge is not responding"
                 appendCheckNotice("OpenCode free-limit probe skipped: \(reason); only proxy connectivity was checked.")
@@ -364,12 +380,134 @@ final class ProxyAppModel: ObservableObject {
         }
     }
 
+    /// Re-runs the quota probe for one paused entry. The entry stays paused
+    /// unless the probe passes, so a failed retry never opens a limited proxy.
+    func retryFreeUsage(for entryID: String) async {
+        guard !isTesting,
+              !retryingFreeUsageIDs.contains(entryID),
+              let entry = state?.proxies.first(where: { $0.id == entryID }),
+              entry.enabled,
+              entry.hasValidDefinition,
+              entry.isFreeUsageLimited() else { return }
+        guard let edgeConfig = loadEdgeConfig() else {
+            freeUsageRetryMessages[entryID] = "RelayDock Edge is not configured, so the quota cannot be checked."
+            return
+        }
+        guard let proxyURL = openCodeProbeProxyURL(for: entry) else {
+            freeUsageRetryMessages[entryID] = "No cached proxy URL yet, so the quota cannot be checked."
+            return
+        }
+
+        retryingFreeUsageIDs.insert(entryID)
+        freeUsageRetryMessages.removeValue(forKey: entryID)
+        freeUsageProbeStatuses[entryID] = .checking
+        defer {
+            retryingFreeUsageIDs.remove(entryID)
+            if freeUsageProbeStatuses[entryID] == .checking {
+                freeUsageProbeStatuses.removeValue(forKey: entryID)
+            }
+        }
+
+        guard let model = await freeModelProvider() else {
+            freeUsageProbeStatuses[entryID] = .skipped
+            freeUsageRetryMessages[entryID] = "No OpenCode free model is available, so the quota cannot be checked."
+            return
+        }
+        let outcome = await freeUsageProbe(entry, proxyURL, edgeConfig, model)
+        recordFreeUsageProbeOutcome(outcome, for: entry)
+        freeUsageRetryMessages[entryID] = retryMessage(for: entry, outcome: outcome)
+    }
+
+    /// One automatic recheck per cooldown, only when its reset is close. A
+    /// probe that still reports a limit cannot shorten the deadline, so this
+    /// confirms recovery without creating a retry loop.
+    func reprobeFreeUsageIfDue(now: Date = Date()) async {
+        guard !isTesting,
+              retryingFreeUsageIDs.isEmpty,
+              now.timeIntervalSince1970 - lastFreeUsageReprobeAt >= Self.freeUsageReprobeInterval,
+              let entry = nextFreeUsageReprobeCandidate(now: now.timeIntervalSince1970),
+              let deadline = entry.freeUsageLimitedUntil else { return }
+        lastFreeUsageReprobeAt = now.timeIntervalSince1970
+        guard let edgeConfig = loadEdgeConfig(),
+              let proxyURL = openCodeProbeProxyURL(for: entry),
+              let model = await freeModelProvider() else { return }
+        reprobedFreeUsageDeadlines[entry.id] = deadline
+
+        let outcome = await freeUsageProbe(entry, proxyURL, edgeConfig, model)
+        guard !Task.isCancelled else { return }
+        recordFreeUsageProbeOutcome(outcome, for: entry)
+        freeUsageRetryMessages[entry.id] = retryMessage(for: entry, outcome: outcome, automatic: true)
+    }
+
+    private func scheduleFreeUsageReprobeIfNeeded(now: Date = Date()) {
+        guard freeUsageReprobeTask == nil,
+              state?.mode != .off,
+              !isTesting,
+              retryingFreeUsageIDs.isEmpty,
+              now.timeIntervalSince1970 - lastFreeUsageReprobeAt >= Self.freeUsageReprobeInterval,
+              nextFreeUsageReprobeCandidate(now: now.timeIntervalSince1970) != nil else { return }
+        freeUsageReprobeTask = Task { [weak self] in
+            guard let self else { return }
+            await self.reprobeFreeUsageIfDue(now: now)
+            self.freeUsageReprobeTask = nil
+        }
+    }
+
+    private func nextFreeUsageReprobeCandidate(now: Double) -> ProxyEntry? {
+        (state?.proxies ?? [])
+            .filter { entry in
+                guard entry.enabled,
+                      entry.hasValidDefinition,
+                      entry.isFreeUsageLimited(at: now),
+                      let deadline = entry.freeUsageLimitedUntil,
+                      deadline - now <= Self.freeUsageReprobeLeadTime else { return false }
+                return reprobedFreeUsageDeadlines[entry.id] != deadline
+            }
+            .min { ($0.freeUsageLimitedUntil ?? .infinity) < ($1.freeUsageLimitedUntil ?? .infinity) }
+    }
+
+    private func retryMessage(
+        for entry: ProxyEntry,
+        outcome: OpenCodeFreeUsageProbe.Outcome,
+        automatic: Bool = false
+    ) -> String {
+        let prefix = automatic ? "Automatic retry" : "Retry"
+        switch outcome {
+        case .passed:
+            let stillLimited = state?.proxies.first(where: { $0.id == entry.id })?.isFreeUsageLimited() == true
+            return stillLimited
+                ? "\(prefix) passed, but a newer cooldown was recorded during the check."
+                : "\(prefix) passed — back in rotation."
+        case .freeUsageLimited:
+            return "\(prefix) is still limited; the cooldown stays in place."
+        case .failed, .timedOut:
+            return "\(prefix) failed; the cooldown stays in place."
+        }
+    }
+
+    /// Two or more enabled entries paused around the same time point at the
+    /// account/network-wide free tier rather than one bad proxy. The sidecar
+    /// stores deadlines, not report times, so equal-ish deadlines are the
+    /// signal available to the app.
+    var sharedFreeUsageLimitWarning: String? {
+        let deadlines = (state?.proxies ?? [])
+            .filter { $0.enabled && $0.isFreeUsageLimited() }
+            .compactMap(\.freeUsageLimitedUntil)
+            .sorted()
+        guard deadlines.count >= 2,
+              let first = deadlines.first,
+              let last = deadlines.last,
+              last - first <= 30 * 60 else { return nil }
+        return "\(deadlines.count) proxies are paused for OpenCode’s free limit around the same time. "
+            + "The limit is shared per account and network, so retrying one proxy may not help before the reset."
+    }
+
     /// Test All first checks proxy connectivity, then sends one small OpenCode
     /// request through an isolated Edge containing only each healthy entry.
     private func runOpenCodeFreeUsageProbes(edgeConfig: EdgeConfigFile, healthyEntryIDs: Set<String>) async {
         let candidates = (state?.proxies ?? []).filter {
             healthyEntryIDs.contains($0.id)
-                && $0.enabled && $0.hasValidDefinition && $0.health?.ok == true && !$0.isFreeUsageLimited()
+                && $0.enabled && $0.hasValidDefinition && $0.health?.ok == true
         }
         guard !candidates.isEmpty else { return }
         freeUsageProbeStatuses = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, .checking) })
@@ -451,6 +589,16 @@ final class ProxyAppModel: ObservableObject {
     private func recordFreeUsageProbeOutcome(_ outcome: OpenCodeFreeUsageProbe.Outcome, for entry: ProxyEntry) {
         switch outcome {
         case .passed:
+            if let previousDeadline = entry.freeUsageLimitedUntil {
+                do {
+                    _ = try FreeUsageLimitStore(configDirectory: store.fileURL.deletingLastPathComponent())
+                        .clear(entry.id, ifDeadlineMatches: previousDeadline)
+                    refreshProxyStateFromDisk()
+                } catch {
+                    freeUsageProbeStatuses[entry.id] = .failed
+                    return
+                }
+            }
             freeUsageProbeStatuses[entry.id] = .passed
         case .failed, .timedOut:
             freeUsageProbeStatuses[entry.id] = .failed
@@ -587,6 +735,7 @@ final class ProxyAppModel: ObservableObject {
             refreshProxyStateFromDisk()
             await refreshEdgeStatus()
             if state?.mode != .off { await refreshOpenCodeRouting() }
+            scheduleFreeUsageReprobeIfNeeded()
             do {
                 try await Task.sleep(for: .seconds(3))
             } catch {
