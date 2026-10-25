@@ -167,6 +167,10 @@ final class UpdateModel: ObservableObject {
         self.phase = phase
     }
 
+    func waitForUpToDateResetForFixtures() async {
+        await upToDateResetTask?.value
+    }
+
     private func scheduleUpToDateReset() {
         upToDateResetTask?.cancel()
         upToDateResetTask = Task { [weak self] in
