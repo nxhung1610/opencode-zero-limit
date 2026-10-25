@@ -49,13 +49,62 @@ enum OpenCodeTrafficEvidence: Equatable {
     }
 }
 
+/// Live Edge status as its own observable. The 3-second poll then invalidates
+/// only the rows that show it: republishing through `ProxyAppModel` rebuilt the
+/// whole window — sidebar, split view, and Routing form — on every tick, which
+/// is what made expanding the sidebar hitch.
+@MainActor
+final class EdgePanelModel: ObservableObject {
+    @Published private(set) var panel: EdgePanelState = .unknown
+
+    /// Polls repeat an unchanged panel constantly, so an idle app stays idle by
+    /// skipping the publish when nothing moved.
+    func apply(_ next: EdgePanelState) {
+        guard next != panel else { return }
+        panel = next
+    }
+
+    /// Recent tunnels grouped by client process — the panel's "who used Edge"
+    /// list. Processes with active tunnels sort first, then by last activity.
+    var edgeAttribution: [EdgeAttribution] {
+        guard case .running(let status) = panel else { return [] }
+        var byKey: [String: EdgeAttribution] = [:]
+        for tunnel in status.tunnels {
+            let key = tunnel.peerPid.map(String.init) ?? "unknown"
+            var summary = byKey[key] ?? EdgeAttribution(
+                id: key,
+                name: tunnel.peerName ?? "Unknown process",
+                pid: tunnel.peerPid,
+                tunnels: 0,
+                activeTunnels: 0,
+                bytesDown: 0,
+                lastActivity: tunnel.startedAt
+            )
+            summary.tunnels += 1
+            if tunnel.active { summary.activeTunnels += 1 }
+            summary.bytesDown += tunnel.bytesDown
+            summary.lastActivity = max(summary.lastActivity, tunnel.endedAt ?? tunnel.startedAt)
+            byKey[key] = summary
+        }
+        return byKey.values.sorted { lhs, rhs in
+            if (lhs.activeTunnels > 0) != (rhs.activeTunnels > 0) {
+                return lhs.activeTunnels > 0
+            }
+            return lhs.lastActivity > rhs.lastActivity
+        }
+    }
+}
+
 struct EdgePanelView: View {
-    @ObservedObject var model: ProxyAppModel
+    @ObservedObject var edgeStatus: EdgePanelModel
+    /// The Routing page already explains unverified traffic above this panel,
+    /// so the panel does not repeat it.
+    var hasOpenCodeRoutingNotice: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            switch model.edgePanel {
+            switch edgeStatus.panel {
             case .unknown:
                 Text("Checking…")
                     .font(.callout)
@@ -92,7 +141,7 @@ struct EdgePanelView: View {
     }
 
     private var symbol: String {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .unknown: "circle.dotted"
         case .notConfigured: "questionmark.circle"
         case .notRunning: "moon.zzz"
@@ -101,7 +150,7 @@ struct EdgePanelView: View {
     }
 
     private var color: Color {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .running: Color.secondary
         case .notConfigured: Color.primary
         case .unknown, .notRunning: .secondary
@@ -109,7 +158,7 @@ struct EdgePanelView: View {
     }
 
     private var title: String {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .unknown: "RelayDock Edge"
         case .notConfigured: "RelayDock Edge is not configured"
         case .notRunning: "RelayDock Edge is not running"
@@ -118,7 +167,7 @@ struct EdgePanelView: View {
     }
 
     private var subtitle: String? {
-        guard case .running(let status) = model.edgePanel else { return nil }
+        guard case .running(let status) = edgeStatus.panel else { return nil }
         return "Up \(relativeTime(status.launchedAt)) · mode \(status.mode.rawValue.capitalized)"
     }
 
@@ -126,7 +175,7 @@ struct EdgePanelView: View {
 
     @ViewBuilder
     private func runningDetail(_ status: EdgeStatusResponse) -> some View {
-        if !model.hasOpenCodeRoutingNotice { trafficVerification(status) }
+        if !hasOpenCodeRoutingNotice { trafficVerification(status) }
         if let upstream = status.upstream {
             LabeledContent("Upstream") {
                 Text(upstreamLine(upstream))
@@ -229,7 +278,7 @@ struct EdgePanelView: View {
 
     @ViewBuilder
     private var attribution: some View {
-        let peers = model.edgeAttribution
+        let peers = edgeStatus.edgeAttribution
         if !peers.isEmpty {
             DisclosureGroup("Recent tunnels") {
                 ForEach(peers.prefix(8)) { peer in

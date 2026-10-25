@@ -43,6 +43,33 @@ import Testing
         #expect(model.state == .installed(.init(agentPlistInstalled: false, componentsOutOfDate: true)))
     }
 
+    @Test func refreshDetectsRelayDockPluginUpdatesWithoutClaimingUnrelatedPlugins() throws {
+        let fixture = try SetupFixture()
+        defer { fixture.cleanUp() }
+        try fixture.writeInstall(componentsMatchBundle: true, agentPlist: false)
+        let bundledPlugin = fixture.resourcesURL.appending(path: "relaydock-free-usage-limit.js")
+        let pluginDirectory = fixture.home.appending(path: ".config/opencode/plugins", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: pluginDirectory, withIntermediateDirectories: true)
+        let installedPlugin = pluginDirectory.appending(path: "relaydock-free-usage-limit.js")
+        let current = "// RelayDock-managed plugin.\nexport const version = 'current';\n"
+        try current.write(to: bundledPlugin, atomically: true, encoding: .utf8)
+        try "// RelayDock-managed plugin.\nexport const version = 'old';\n"
+            .write(to: installedPlugin, atomically: true, encoding: .utf8)
+        let model = fixture.makeModel()
+
+        model.refresh()
+        #expect(model.state == .installed(.init(agentPlistInstalled: false, componentsOutOfDate: true)))
+
+        try current.write(to: installedPlugin, atomically: true, encoding: .utf8)
+        model.refresh()
+        #expect(model.state == .installed(.init(agentPlistInstalled: false, componentsOutOfDate: false)))
+
+        try "// An unrelated plugin with the same filename.\nexport const plugin = true;\n"
+            .write(to: installedPlugin, atomically: true, encoding: .utf8)
+        model.refresh()
+        #expect(model.state == .installed(.init(agentPlistInstalled: false, componentsOutOfDate: false)))
+    }
+
     @Test func refreshReportsUnavailableWithoutBundledComponents() throws {
         let fixture = try SetupFixture(includeBundledBinaries: false)
         defer { fixture.cleanUp() }

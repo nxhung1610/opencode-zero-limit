@@ -57,14 +57,34 @@ enum AppCopy {
 /// never drift apart.
 struct ProxyHealthIcon: View {
     var proxy: ProxyEntry
+    var now: Date? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @ViewBuilder
     var body: some View {
+        if let now {
+            icon(now: now)
+        } else if proxy.isFreeUsageLimited() {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                icon(now: timeline.date)
+            }
+        } else {
+            icon(now: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func icon(now: Date) -> some View {
         Group {
             if !proxy.enabled {
                 Image(systemName: "circle")
                     .foregroundStyle(.tertiary)
                     .accessibilityLabel("Disabled")
+            } else if let limitedUntil = proxy.freeUsageLimitedUntil,
+                      let remaining = ProxyStatus.remainingTime(until: limitedUntil, now: now) {
+                Image(systemName: "clock.fill")
+                    .foregroundStyle(Color.primary)
+                    .accessibilityLabel("OpenCode free-usage limit active, \(remaining) remaining")
             } else if let health = proxy.health {
                 Image(systemName: health.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundStyle(health.ok ? Color.secondary : Color.primary)
@@ -79,6 +99,7 @@ struct ProxyHealthIcon: View {
         .contentTransition(.opacity)
         .animation(reduceMotion ? nil : AppTheme.Motion.status, value: proxy.enabled)
         .animation(reduceMotion ? nil : AppTheme.Motion.status, value: proxy.health?.ok)
+        .animation(reduceMotion ? nil : AppTheme.Motion.status, value: proxy.freeUsageLimitedUntil)
     }
 }
 
@@ -89,20 +110,52 @@ struct ProxyStatusText: View {
     var proxy: ProxyEntry
     var mode: ProxyMode
     var isTesting: Bool
+    var probeStatus: FreeUsageProbeStatus?
+    /// A parent can supply its own timeline date to keep the whole row's
+    /// visible, tooltip, and accessibility copy in sync.
+    var now: Date? = nil
     var showsAge = true
     var font: Font = .footnote
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @ViewBuilder
     var body: some View {
-        let text = ProxyStatus.text(for: proxy, mode: mode, isTesting: isTesting)
+        if let now {
+            status(now: now)
+        } else if proxy.isFreeUsageLimited() {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                status(now: timeline.date)
+            }
+        } else {
+            status(now: Date())
+        }
+    }
+
+    private func status(now: Date) -> some View {
+        let rowIsTesting = isTesting && probeStatus == nil
+        let text = ProxyStatus.text(
+            for: proxy,
+            mode: mode,
+            isTesting: rowIsTesting,
+            probeStatus: probeStatus,
+            now: now
+        )
 
         return HStack(spacing: 4) {
+            if probeStatus == .checking {
+                ProgressView().controlSize(.mini)
+            }
             Text(text)
                 .monospacedDigit()
-                .foregroundStyle(ProxyStatus.color(for: proxy, isTesting: isTesting))
+                .foregroundStyle(ProxyStatus.color(
+                    for: proxy,
+                    isTesting: rowIsTesting,
+                    probeStatus: probeStatus,
+                    now: now
+                ))
                 .contentTransition(.opacity)
                 .animation(reduceMotion ? nil : AppTheme.Motion.status, value: text)
-            if showsAge, let age = ageSuffix {
+            if showsAge, let age = ageSuffix(now: now) {
                 Text("· \(age)")
                     .foregroundStyle(.tertiary)
             }
@@ -112,9 +165,9 @@ struct ProxyStatusText: View {
     }
 
     /// Row age suffix; hidden while a test run is rewriting results.
-    private var ageSuffix: String? {
-        guard !isTesting, proxy.enabled else { return nil }
-        return ProxyStatus.checkedAgo(for: proxy)
+    private func ageSuffix(now: Date) -> String? {
+        guard (!isTesting || probeStatus != nil), probeStatus != .checking, proxy.enabled else { return nil }
+        return ProxyStatus.checkedAgo(for: proxy, now: now)
     }
 }
 

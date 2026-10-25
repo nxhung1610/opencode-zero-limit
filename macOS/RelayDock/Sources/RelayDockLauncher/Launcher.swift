@@ -45,6 +45,28 @@ enum Launcher {
             fail(LauncherError.commandNotFound(target.command).localizedDescription)
         }
 
+        // Test All's OpenCode probe supplies a temporary HTTP Edge endpoint
+        // pinned to the specific proxy whose normal health check passed. This
+        // path avoids the live pool listener; the plugin reports to that
+        // isolated Edge with the explicit entry ID and listener port.
+        if target.command == "opencode", target.arguments.first == "run",
+           let rawProxyURL = environment["RELAYDOCK_TEST_PROXY_URL"],
+           let entryID = environment["RELAYDOCK_TEST_PROXY_ID"],
+           let rawEdgePort = environment["RELAYDOCK_TEST_EDGE_PORT"],
+           let edgePort = Int(rawEdgePort),
+           let testEnvironment = testProxyEnvironment(
+               proxyURL: rawProxyURL,
+               entryID: entryID,
+               edgePort: edgePort,
+               base: environment
+           ) {
+            replaceProcess(
+                executable: executable,
+                arguments: [executable] + target.arguments,
+                environment: testEnvironment
+            )
+        }
+
         // Off short-circuit: no proxy environment, and Edge is never contacted
         // (it may not even be running).
         let store = ProxyStore(environment: environment)
@@ -198,6 +220,27 @@ enum Launcher {
             return false
         }
         return firstInode == secondInode && firstDevice == secondDevice
+    }
+
+    /// Builds the one-shot environment used only by RelayDock's active
+    /// free-usage probe. The isolated HTTP Edge URL stays in the standard proxy
+    /// vars; its marker is removed before starting OpenCode.
+    static func testProxyEnvironment(
+        proxyURL: String,
+        entryID: String,
+        edgePort: Int,
+        base: [String: String]
+    ) -> [String: String]? {
+        guard let normalizedURL = parseProxyImportLine(proxyURL),
+              !entryID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...65_535).contains(edgePort) else { return nil }
+        var environment = buildOpenCodeProxyEnvironment(proxyURL: normalizedURL, base: base)
+        environment["NO_PROXY"] = "localhost,127.0.0.1"
+        environment["no_proxy"] = "localhost,127.0.0.1"
+        environment["RELAYDOCK_TEST_PROXY_ID"] = entryID
+        environment["RELAYDOCK_TEST_EDGE_PORT"] = String(edgePort)
+        environment.removeValue(forKey: "RELAYDOCK_TEST_PROXY_URL")
+        return environment
     }
 
     // MARK: - Output

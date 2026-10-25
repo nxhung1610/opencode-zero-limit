@@ -242,33 +242,48 @@ struct RoutingView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     RoutingSetupView(model: model.routingSetup)
                     Divider()
-                    EdgePanelView(model: model)
+                    EdgePanelView(
+                        edgeStatus: model.edgeStatus,
+                        hasOpenCodeRoutingNotice: model.hasOpenCodeRoutingNotice
+                    )
                 }
                 .padding(.vertical, 6)
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Label("RelayDock Edge & routing setup", systemImage: "bolt.horizontal.circle")
-                        if needsAttention {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.primary)
-                                .accessibilityLabel("Needs attention")
-                        }
-                    }
-                    Text(advancedSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+                AdvancedSectionLabel(edgeStatus: model.edgeStatus, routingSetup: model.routingSetup)
             }
         }
     }
+}
 
-    private var advancedSummary: String {
+/// The advanced disclosure's summary line. It observes Edge status and the
+/// setup card directly so a status poll redraws this label instead of the whole
+/// Routing form.
+private struct AdvancedSectionLabel: View {
+    @ObservedObject var edgeStatus: EdgePanelModel
+    @ObservedObject var routingSetup: RoutingSetupModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Label("RelayDock Edge & routing setup", systemImage: "bolt.horizontal.circle")
+                if needsAttention {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.primary)
+                        .accessibilityLabel("Needs attention")
+                }
+            }
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    private var summary: String {
         var parts: [String] = []
 
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .running(let status):
             parts.append(status.counters.tunnelsActive > 0
                 ? "Edge running · \(status.counters.tunnelsActive) active"
@@ -281,7 +296,7 @@ struct RoutingView: View {
             parts.append("Edge status unknown")
         }
 
-        switch model.routingSetup.state {
+        switch routingSetup.state {
         case .installed(let installation):
             if installation.componentsOutOfDate {
                 parts.append("setup needs update")
@@ -300,12 +315,12 @@ struct RoutingView: View {
     }
 
     private var needsAttention: Bool {
-        if case .installed(let installation) = model.routingSetup.state {
+        if case .installed(let installation) = routingSetup.state {
             if installation.componentsOutOfDate || !installation.agentPlistInstalled {
                 return true
             }
         }
-        if case .notConfigured = model.edgePanel {
+        if case .notConfigured = edgeStatus.panel {
             return true
         }
         return false

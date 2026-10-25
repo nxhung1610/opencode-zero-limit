@@ -59,6 +59,7 @@ final class RoutingSetupModel: ObservableObject {
     private let storeDirectory: URL
     private let bundledEdgeURL: URL?
     private let bundledLauncherURL: URL?
+    private let bundledFreeUsagePluginURL: URL?
     private let environment: [String: String]
     private let runProcess: ProcessRunner
 
@@ -71,6 +72,7 @@ final class RoutingSetupModel: ObservableObject {
         self.storeDirectory = storeDirectory
         self.bundledEdgeURL = bundledResources?.appending(path: "relaydock-edge")
         self.bundledLauncherURL = bundledResources?.appending(path: "relaydock-launch")
+        self.bundledFreeUsagePluginURL = bundledResources?.appending(path: "relaydock-free-usage-limit.js")
         self.environment = environment
         self.runProcess = runProcess
     }
@@ -95,6 +97,21 @@ final class RoutingSetupModel: ObservableObject {
 
     private var commandLinkURL: URL {
         home.appending(path: ".local/bin", directoryHint: .isDirectory).appending(path: "opencode")
+    }
+
+    private var installedFreeUsagePluginURL: URL {
+        if let custom = environment["OPENCODE_CONFIG_DIR"], !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: custom, isDirectory: true)
+                .appending(path: "plugins", directoryHint: .isDirectory)
+                .appending(path: "relaydock-free-usage-limit.js")
+        }
+        let configRoot: URL
+        if let xdg = environment["XDG_CONFIG_HOME"], !xdg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            configRoot = URL(fileURLWithPath: xdg, isDirectory: true)
+        } else {
+            configRoot = home.appending(path: ".config", directoryHint: .isDirectory)
+        }
+        return configRoot.appending(path: "opencode/plugins/relaydock-free-usage-limit.js")
     }
 
     private var agentPlistURL: URL {
@@ -135,6 +152,10 @@ final class RoutingSetupModel: ObservableObject {
             agentPlistInstalled: manager.fileExists(atPath: agentPlistURL.path),
             componentsOutOfDate: !Self.filesMatch(edge, installedEdgeURL)
                 || !Self.filesMatch(launcher, installedLauncherURL)
+                || Self.freeUsagePluginNeedsUpdate(
+                    bundled: bundledFreeUsagePluginURL,
+                    installed: installedFreeUsagePluginURL
+                )
         ))
     }
 
@@ -211,6 +232,19 @@ final class RoutingSetupModel: ObservableObject {
               let right = try? Data(contentsOf: rhs, options: .mappedIfSafe) else { return false }
         if left.count != right.count { return false }
         return SHA256.hash(data: left) == SHA256.hash(data: right)
+    }
+
+    /// The app bundle carries the plugin beside its Edge binary. Only compare
+    /// files RelayDock owns; a same-named unrelated OpenCode plugin remains
+    /// untouched and must not leave Setup permanently showing Update.
+    private static func freeUsagePluginNeedsUpdate(bundled: URL?, installed: URL) -> Bool {
+        let marker = "// RelayDock-managed plugin."
+        guard let bundled,
+              let bundledText = try? String(contentsOf: bundled, encoding: .utf8),
+              bundledText.contains(marker) else { return false }
+        guard let installedText = try? String(contentsOf: installed, encoding: .utf8) else { return true }
+        guard installedText.contains(marker) else { return false }
+        return !filesMatch(bundled, installed)
     }
 
     private static func failureMessage(_ result: ProcessResult, fallback: String) -> String {

@@ -49,6 +49,8 @@ import Testing
         #expect(record.contains("bootstrap gui/\(getuid()) \(plistURL.path)"))
         #expect(output.text.contains("running under launchd agent \(EdgeLaunchAgent.label)"))
         #expect(output.text.contains("OK: 'opencode' resolves to the wrapper."))
+        #expect(output.text.contains("Installed OpenCode free-usage limit monitor plugin."))
+        #expect(try String(contentsOf: fixture.openCodePlugin, encoding: .utf8).contains("test plugin payload"))
     }
 
     @Test func installKeepsAnExistingEdgeConfig() throws {
@@ -142,10 +144,29 @@ import Testing
             atPath: EdgeLaunchAgent.plistURL(environment: fixture.environment).path
         ))
         #expect(FileManager.default.fileExists(atPath: fixture.config.appending(path: "proxies.json").path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.openCodePlugin.path))
         #expect(stopped.contains(fixture.binDirectory.appending(path: "relaydock-edge")))
         #expect(output.text.contains("Removed launchd agent"))
         #expect(output.text.contains("Removed \(fixture.binDirectory.appending(path: "opencode").path)"))
+        #expect(output.text.contains("Removed OpenCode free-usage limit monitor plugin."))
         #expect(output.text.contains("Kept the proxy pool"))
+    }
+
+    @Test func installPreservesUnrelatedOpenCodePluginWithSameName() throws {
+        let fixture = try InstallFixture()
+        defer { fixture.cleanUp() }
+        try FileManager.default.createDirectory(
+            at: fixture.openCodePlugin.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try "// a user's plugin\n".write(to: fixture.openCodePlugin, atomically: true, encoding: .utf8)
+        let output = OutputCapture()
+
+        let code = fixture.makeInstaller(output: output)
+            .install(sourceLauncher: fixture.launcherSource, sourceEdge: fixture.edgeSource)
+
+        #expect(code == 0)
+        #expect(try String(contentsOf: fixture.openCodePlugin, encoding: .utf8) == "// a user's plugin\n")
+        #expect(output.errorText.contains("preserving unrelated OpenCode plugin"))
     }
 
     @Test func uninstallWithoutAnInstallSucceedsQuietly() throws {
@@ -203,12 +224,18 @@ private struct InstallFixture {
             try "#!/bin/sh\n".write(to: url, atomically: true, encoding: .utf8)
             try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }
+        try "// RelayDock-managed plugin.\n// test plugin payload\n".write(
+            to: sources.appending(path: "relaydock-free-usage-limit.js"), atomically: true, encoding: .utf8
+        )
         fakeLaunchctl = FakeLaunchctl(root: root)
         try fakeLaunchctl.writeScript()
     }
 
     var launcherSource: URL { root.appending(path: "build/relaydock-launch") }
     var edgeSource: URL { root.appending(path: "build/relaydock-edge") }
+    var openCodePlugin: URL {
+        home.appending(path: ".config/opencode/plugins/relaydock-free-usage-limit.js")
+    }
     var binDirectory: URL { home.appending(path: ".local/bin", directoryHint: .isDirectory) }
 
     var environment: [String: String] {

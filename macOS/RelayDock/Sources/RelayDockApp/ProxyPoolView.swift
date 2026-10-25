@@ -203,6 +203,7 @@ private struct ProxyPoolRow: View {
                     proxy: currentProxy,
                     mode: model.state?.mode ?? .off,
                     isTesting: model.isTesting,
+                    probeStatus: model.freeUsageProbeStatuses[currentProxy.id],
                     showsAge: true,
                     font: .caption
                 )

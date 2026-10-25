@@ -115,6 +115,33 @@ struct LauncherTests {
         #expect(line.contains("first request resolves the upstream"))
     }
 
+    @Test func activeQuotaProbeUsesItsIsolatedEdgeAndCarriesItsEntryID() {
+        let environment = Launcher.testProxyEnvironment(
+            proxyURL: "http://127.0.0.1:57212",
+            entryID: "px_a",
+            edgePort: 57_212,
+            base: ["HTTPS_PROXY": "http://old.example:3128", "RELAYDOCK_TEST_PROXY_URL": "internal"]
+        )
+
+        #expect(environment?["HTTP_PROXY"] == "http://127.0.0.1:57212")
+        #expect(environment?["HTTPS_PROXY"] == "http://127.0.0.1:57212")
+        #expect(environment?["RELAYDOCK_TEST_PROXY_ID"] == "px_a")
+        #expect(environment?["RELAYDOCK_TEST_EDGE_PORT"] == "57212")
+        #expect(environment?["RELAYDOCK_TEST_PROXY_URL"] == nil)
+    }
+
+    @Test func activeQuotaProbeRejectsInvalidEntryOrPort() {
+        #expect(Launcher.testProxyEnvironment(
+            proxyURL: "ftp://proxy.example:21", entryID: "px_a", edgePort: 57_211, base: [:]
+        ) == nil)
+        #expect(Launcher.testProxyEnvironment(
+            proxyURL: "http://proxy.example:8080", entryID: "  ", edgePort: 57_211, base: [:]
+        ) == nil)
+        #expect(Launcher.testProxyEnvironment(
+            proxyURL: "http://proxy.example:8080", entryID: "px_a", edgePort: 0, base: [:]
+        ) == nil)
+    }
+
     // MARK: - Edge binary discovery
 
     @Test func edgeBinaryOverrideMustBeExecutable() throws {

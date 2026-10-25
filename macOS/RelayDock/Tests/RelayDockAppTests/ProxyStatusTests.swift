@@ -5,13 +5,18 @@ import Testing
 @testable import RelayDockApp
 
 @Suite struct ProxyStatusTests {
-    private func entry(enabled: Bool = true, health: ProxyHealth? = nil) -> ProxyEntry {
+    private func entry(
+        enabled: Bool = true,
+        health: ProxyHealth? = nil,
+        limitedUntil: Double? = nil
+    ) -> ProxyEntry {
         ProxyEntry(
             id: "px_test",
             label: "gateway.example:8080",
             url: "http://gateway.example:8080",
             enabled: enabled,
-            health: health
+            health: health,
+            freeUsageLimitedUntil: limitedUntil
         )
     }
 
@@ -23,6 +28,19 @@ import Testing
     @Test func testingShowsProgressCopy() {
         let proxy = entry(health: ProxyHealth(ok: true, latencyMs: 8))
         #expect(ProxyStatus.text(for: proxy, mode: .auto, isTesting: true) == "Testing…")
+    }
+
+    @Test func quotaProbeStatusOverridesTheGlobalTestingCopy() {
+        let proxy = entry(health: ProxyHealth(ok: true, latencyMs: 8))
+        #expect(ProxyStatus.text(
+            for: proxy, mode: .auto, isTesting: true, probeStatus: .checking
+        ) == "Checking quota…")
+        #expect(ProxyStatus.text(
+            for: proxy, mode: .auto, isTesting: true, probeStatus: .passed
+        ) == "Quota OK")
+        #expect(ProxyStatus.text(
+            for: proxy, mode: .auto, isTesting: true, probeStatus: .failed
+        ) == "Quota test failed")
     }
 
     @Test func untestedShowsNotTested() {
@@ -40,6 +58,28 @@ import Testing
         let proxy = entry(health: ProxyHealth(ok: true, latencyMs: 42.4))
         #expect(ProxyStatus.text(for: proxy, mode: .auto, isTesting: false) == "Passed · 42 ms")
         #expect(ProxyStatus.healthSummary(for: proxy) == "Passed · 42 ms")
+    }
+
+    @Test func freeUsageLimitOverridesHealthAndShowsTheRemainingTime() {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let until = now.timeIntervalSince1970 + 3_600
+        let proxy = entry(health: ProxyHealth(ok: true), limitedUntil: until)
+
+        #expect(ProxyStatus.text(for: proxy, mode: .auto, isTesting: false, now: now) == "Free limit · 1h left")
+        #expect(ProxyStatus.detail(for: proxy, now: now) == "OpenCode free-usage limit · excluded for 1h")
+        #expect(ProxyStatus.color(for: proxy, isTesting: false, now: now) == AppTheme.ink)
+        #expect(ProxyStatus.text(for: entry(limitedUntil: now.timeIntervalSince1970 - 1), mode: .auto, isTesting: false, now: now) == "Not tested")
+    }
+
+    @Test func remainingTimeCountsDownCompactlyAndRoundsUp() {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970 + 65, now: now) == "1m 5s")
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970 + 3_599, now: now) == "59m 59s")
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970 + 3_661, now: now) == "1h 1m")
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970 + 86_400, now: now) == "1d")
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970 + 0.2, now: now) == "1s")
+        #expect(ProxyStatus.remainingTime(until: now.timeIntervalSince1970, now: now) == nil)
     }
 
     @Test func inkWeightTracksFailure() {

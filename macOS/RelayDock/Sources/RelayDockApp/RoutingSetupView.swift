@@ -47,7 +47,7 @@ struct RoutingSetupView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("RelayDock removes the launchd agent, ~/.local/bin/relaydock-launch and relaydock-edge, the ~/.local/bin/opencode symlink, and edge.json. Your proxy pool and Edge's script cache are kept; OpenCode data is never touched.")
+            Text("RelayDock removes its launchd agent, wrapper binaries and symlink, edge.json, and its own OpenCode quota-monitor plugin. Your proxy pool, script cache, cooldown state, OpenCode configuration, and unrelated plugins are kept.")
         }
     }
 

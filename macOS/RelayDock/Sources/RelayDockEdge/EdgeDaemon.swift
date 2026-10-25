@@ -40,6 +40,13 @@ enum EdgeCheckScope: Sendable {
     case entries([String])
 }
 
+enum EdgeFreeUsageLimitReport: Equatable, Sendable {
+    case flagged(entryID: String, retryAt: Double)
+    case unmatched
+    case invalidCooldown
+    case persistenceFailed
+}
+
 /// How an established upstream tunnel ended badly after its dial succeeded.
 enum EdgeTunnelFailure: Equatable, Sendable {
     /// The upstream side errored mid-session (reset or abort after the
@@ -95,9 +102,16 @@ actor EdgeDaemon {
 
     private var cachedState: ProxyState?
     private var cachedStateMtime: Date?
+    private var cachedFreeUsageLimitMtime: Date?
     private var stateEverLoaded = false
     private var bindings: [String: String] = [:]
     private var upstream: EdgeUpstream?
+    private var autoUpstreams: [String: EdgeUpstream] = [:]
+    private var autoResolveTasks: [String: Task<ResolveOutcome, Never>] = [:]
+    private var autoRetryAtByEntry: [String: Double] = [:]
+    private var autoErrors: [String: String] = [:]
+    private var autoLastEntryID: String?
+    private var lastAutoFailureAt: [String: Double] = [:]
     private var resolveTask: Task<ResolveOutcome, Never>?
     private var throttleRetryAt: Double?
     private var resolveBackoffUntil: Double = 0
@@ -148,23 +162,31 @@ actor EdgeDaemon {
     /// that was never readable at all returns nil (callers then refuse).
     private func loadState() -> ProxyState? {
         let url = stateURL
+        let freeUsageLimits = FreeUsageLimitStore(configDirectory: directory)
+        let limitMtime = freeUsageLimits.modificationDate
         guard FileManager.default.fileExists(atPath: url.path) else {
             stateEverLoaded = true
-            cachedState = .defaults
+            let state = freeUsageLimits.applying(to: .defaults)
+            cachedState = state
             cachedStateMtime = nil
-            return .defaults
+            cachedFreeUsageLimitMtime = limitMtime
+            return state
         }
         let mtime = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-        if let cachedState, let mtime, mtime == cachedStateMtime { return cachedState }
+        if let cachedState, mtime == cachedStateMtime, limitMtime == cachedFreeUsageLimitMtime {
+            return cachedState
+        }
         guard let data = try? Data(contentsOf: url),
-              let state = try? JSONDecoder().decode(ProxyState.self, from: data) else {
+              let decoded = try? JSONDecoder().decode(ProxyState.self, from: data) else {
             log.warn("proxies.json is unreadable; keeping the last good configuration")
             return stateEverLoaded ? cachedState : nil
         }
+        let state = freeUsageLimits.applying(to: decoded)
         if !stateEverLoaded { bindings = state.bindings }
         stateEverLoaded = true
         cachedState = state
         cachedStateMtime = mtime
+        cachedFreeUsageLimitMtime = limitMtime
         handleScriptEdits(in: state)
         return state
     }
@@ -227,6 +249,9 @@ actor EdgeDaemon {
         scriptHashes = scriptHashes.filter { scriptIDs.contains($0.key) }
         for id in editedIDs {
             removeProxyScriptCacheSnapshot(for: id)
+            autoUpstreams[id] = nil
+            autoErrors[id] = nil
+            autoRetryAtByEntry[id] = nil
             if upstream?.entryID == id {
                 upstream = nil
                 pendingReason = nil
@@ -275,6 +300,17 @@ actor EdgeDaemon {
             return .refuse(reason: "proxies.json could not be read on this Mac", retryAt: nil)
         }
         if state.mode == .off { return .direct }
+        if state.mode == .auto {
+            return await autoRoute(state: state)
+        }
+        if let selected = state.proxies.first(where: { $0.id == state.manualId }),
+           selected.isFreeUsageLimited(at: now),
+           let retryAt = selected.freeUsageLimitedUntil {
+            let reason = "proxy \(selected.label) is paused after an OpenCode free-usage limit"
+            pendingReason = reason
+            throttleRetryAt = retryAt
+            return .refuse(reason: reason, retryAt: retryAt)
+        }
         if needsResolve(state: state, now: now) {
             if let outcome = await resolveLocked(state: state),
                case .success(let resolved, _) = outcome.kind {
@@ -290,6 +326,140 @@ actor EdgeDaemon {
         let reason = pendingReason ?? Self.defaultRefusal(state)
         if state.directFallback { return .directFallback(reason: reason) }
         return .refuse(reason: reason, retryAt: nil)
+    }
+
+    /// Auto mode rotates eligible proxies at the new-tunnel boundary. The
+    /// cursor advances before any script resolution awaits, so concurrent
+    /// connections do not all claim the same next slot. HTTPS remains opaque:
+    /// one established CONNECT tunnel always keeps its chosen upstream.
+    private func autoRoute(state: ProxyState, excluding excludedIDs: Set<String> = []) async -> EdgeRouteDecision {
+        let selection = stateForSelection(state)
+        let now = Date().timeIntervalSince1970
+        let eligible = selection.autoEligibleProxies(at: now)
+        let validIDs = Set(selection.validEnabledProxies.map(\.id))
+        autoUpstreams = autoUpstreams.filter { validIDs.contains($0.key) }
+        autoRetryAtByEntry = autoRetryAtByEntry.filter { validIDs.contains($0.key) }
+        autoErrors = autoErrors.filter { validIDs.contains($0.key) }
+        if let current = upstream, !validIDs.contains(current.entryID) {
+            upstream = nil
+        }
+
+        // Warm-up and Manual may already have resolved the first pool entry.
+        // Reuse that endpoint, but Auto's cursor—not the sticky account binding—
+        // controls all subsequent tunnel choices.
+        if let current = upstream, validIDs.contains(current.entryID), autoUpstreams[current.entryID] == nil {
+            autoUpstreams[current.entryID] = current
+        }
+        if eligible.contains(where: \.isCustomScript) {
+            syncScriptCacheFromDisk(state: state, force: lastCacheImportMtime == nil)
+        }
+
+        var attempted = excludedIDs
+        var resolutionErrors: [String] = []
+        let ordered = Self.orderedAutoProxies(eligible, after: autoLastEntryID)
+        for entry in ordered where !attempted.contains(entry.id) {
+            // Advance before awaiting script work; actor reentrancy must not
+            // hand the same cursor position to simultaneous new connections.
+            autoLastEntryID = entry.id
+            if let retryAt = autoRetryAtByEntry[entry.id], retryAt > now {
+                attempted.insert(entry.id)
+                if let message = autoErrors[entry.id] { resolutionErrors.append(message) }
+                continue
+            }
+            autoRetryAtByEntry[entry.id] = nil
+            autoErrors[entry.id] = nil
+
+            if let cached = autoUpstreams[entry.id],
+               cached.refreshAt.map({ now >= $0 }) != true,
+               cached.expiresAt.map({ now >= $0 }) != true {
+                selectAutoUpstream(cached)
+                return .upstream(cached)
+            }
+
+            let outcome = await resolveAutoEntry(entry)
+            switch outcome.kind {
+            case .success(let resolved, _):
+                let completedAt = Date().timeIntervalSince1970
+                var adjusted = resolved
+                if let previous = autoUpstreams[entry.id],
+                   previous.url == resolved.url,
+                   previous.expiresAt == resolved.expiresAt,
+                   let previousRefresh = previous.refreshAt,
+                   completedAt >= previousRefresh {
+                    adjusted.refreshAt = completedAt + 30
+                }
+                autoUpstreams[entry.id] = adjusted
+                autoRetryAtByEntry[entry.id] = nil
+                autoErrors[entry.id] = nil
+                resolutions += 1
+                selectAutoUpstream(adjusted)
+                if adjusted.source == "script" {
+                    persistScriptCache(state: loadState() ?? .defaults)
+                }
+                return .upstream(adjusted)
+            case .throttled(let retryAt, let message):
+                autoRetryAtByEntry[entry.id] = retryAt
+                autoErrors[entry.id] = message
+                resolutionErrors.append(message)
+            case .failed(let message):
+                autoRetryAtByEntry[entry.id] = Date().timeIntervalSince1970 + 15
+                autoErrors[entry.id] = message
+                resolutionErrors.append(message)
+            case .modeChanged:
+                break
+            }
+            attempted.insert(entry.id)
+        }
+
+        let retryAt = (autoRetryAtByEntry.values.filter { $0 > now }
+            + selection.validEnabledProxies.compactMap(\.freeUsageLimitedUntil).filter { $0 > now }).min()
+        throttleRetryAt = retryAt
+        let hasLimitedProxy = selection.validEnabledProxies.contains { $0.isFreeUsageLimited(at: now) }
+        let reason = resolutionErrors.first
+            ?? (eligible.isEmpty && hasLimitedProxy
+                ? "all usable proxies are paused until their OpenCode free-usage limit resets"
+                : (excludedIDs.isEmpty ? Self.defaultRefusal(state) : "no other eligible proxy is available to retry this connection"))
+        pendingReason = reason
+        if state.directFallback { return .directFallback(reason: reason) }
+        return .refuse(reason: reason, retryAt: retryAt)
+    }
+
+    private func resolveAutoEntry(_ entry: ProxyEntry) async -> ResolveOutcome {
+        if let task = autoResolveTasks[entry.id] { return await task.value }
+        let placement = ProxyState(mode: .manual, manualId: entry.id, proxies: [entry])
+        let directory = self.directory
+        let log = self.log
+        let task = Task.detached(priority: .userInitiated) {
+            Self.performResolve(selection: placement, bindings: [:], directory: directory, log: log)
+        }
+        autoResolveTasks[entry.id] = task
+        let outcome = await task.value
+        autoResolveTasks[entry.id] = nil
+        return outcome
+    }
+
+    private func selectAutoUpstream(_ resolved: EdgeUpstream) {
+        if let previous = upstream {
+            if previous.entryID != resolved.entryID {
+                switches += 1
+                log.info("switched upstream to \(resolved.label) (\(maskedProxyURL(resolved.url)))")
+            }
+            if previous.entryID != resolved.entryID || previous.url != resolved.url {
+                drainHopPool()
+            }
+        }
+        upstream = resolved
+        pendingReason = nil
+        throttleRetryAt = nil
+        resolveBackoffUntil = 0
+    }
+
+    static func orderedAutoProxies(_ entries: [ProxyEntry], after entryID: String?) -> [ProxyEntry] {
+        guard !entries.isEmpty,
+              let entryID,
+              let index = entries.firstIndex(where: { $0.id == entryID }) else { return entries }
+        let start = (index + 1) % entries.count
+        return Array(entries[start...]) + Array(entries[..<start])
     }
 
     /// Whether the pool's opt-in direct fallback is enabled — read live from
@@ -333,6 +503,11 @@ actor EdgeDaemon {
                 retryAt: nil
             )
         }
+        if entry.isFreeUsageLimited(at: now), let retryAt = entry.freeUsageLimitedUntil {
+            let reason = "pinned proxy \(entry.label) is paused after an OpenCode free-usage limit"
+            pinnedErrors[entryID] = reason
+            return .refuse(reason: reason, retryAt: retryAt)
+        }
         if let cached = pinnedUpstreams[entryID], cached.strikes < 3,
            let refreshAt = cached.refreshAt, now < refreshAt {
             return .upstream(cached)
@@ -343,6 +518,94 @@ actor EdgeDaemon {
             reason: pinnedErrors[entryID] ?? "the pinned entry could not resolve an upstream",
             retryAt: nil
         )
+    }
+
+    /// The loopback plugin reports a provider-level free-tier error. Match it
+    /// to the freshest tunnel from the same OpenCode process; do not infer a
+    /// route from timing alone when process attribution is unavailable.
+    func reportFreeUsageLimit(
+        retryAfterMs: Double,
+        reportClientPort: UInt16?,
+        edgePort: UInt16,
+        explicitEntryID: String? = nil,
+        now: Double = Date().timeIntervalSince1970
+    ) -> EdgeFreeUsageLimitReport {
+        guard Self.validFreeUsageCooldown(retryAfterMs), now.isFinite else { return .invalidCooldown }
+        // OpenCode's Test All probe intentionally uses the selected upstream
+        // directly so it cannot rotate onto another healthy pool member. Its
+        // loopback plugin report therefore carries the explicit tested entry.
+        // Normal OpenCode sessions still require same-process tunnel matching.
+        if let explicitEntryID, !explicitEntryID.isEmpty {
+            guard let reportClientPort,
+                  let reporter = attribution.peer(forClientPort: reportClientPort, edgePort: edgePort),
+                  Self.isOpenCodeProcessName(reporter.name) else { return .unmatched }
+            return persistFreeUsageLimit(entryID: explicitEntryID, retryAfterMs: retryAfterMs, now: now)
+        }
+        guard let reportClientPort,
+              let reporter = attribution.peer(forClientPort: reportClientPort, edgePort: edgePort),
+              let tunnel = Self.matchingTunnel(
+                peerPID: reporter.pid,
+                edgePort: edgePort,
+                active: Array(tunnelsActive.values),
+                recent: tunnelsRecent,
+                now: now
+              ),
+              let entryID = tunnel.entryID else { return .unmatched }
+        return persistFreeUsageLimit(entryID: entryID, retryAfterMs: retryAfterMs, now: now)
+    }
+
+    /// Persists the matched proxy's cooldown. Kept internal for deterministic
+    /// tests; live reports go through `reportFreeUsageLimit` above.
+    func persistFreeUsageLimit(
+        entryID: String,
+        retryAfterMs: Double,
+        now: Double = Date().timeIntervalSince1970
+    ) -> EdgeFreeUsageLimitReport {
+        guard Self.validFreeUsageCooldown(retryAfterMs), now.isFinite else { return .invalidCooldown }
+        guard let state = loadState(), state.proxies.contains(where: { $0.id == entryID }) else {
+            return .unmatched
+        }
+
+        let store = FreeUsageLimitStore(configDirectory: directory)
+        do {
+            let retryAt = try store.flag(entryID, until: now + retryAfterMs / 1_000)
+            cachedState = store.applying(to: state, now: now)
+            cachedFreeUsageLimitMtime = store.modificationDate
+            let label = state.proxies.first(where: { $0.id == entryID })?.label ?? entryID
+            log.warn("OpenCode FreeUsageLimitError: paused \(label) for \(Int((retryAt - now).rounded()))s")
+            pushError("OpenCode free-usage limit via \(label); paused until \(Int(retryAt))")
+            return .flagged(entryID: entryID, retryAt: retryAt)
+        } catch {
+            log.error("could not persist OpenCode free-usage cooldown for \(entryID): \(error.localizedDescription)")
+            return .persistenceFailed
+        }
+    }
+
+    static func validFreeUsageCooldown(_ retryAfterMs: Double) -> Bool {
+        retryAfterMs.isFinite && (1_000...604_800_000).contains(retryAfterMs)
+    }
+
+    static func isOpenCodeProcessName(_ name: String) -> Bool {
+        name.caseInsensitiveCompare("opencode") == .orderedSame
+    }
+
+    static func matchingTunnel(
+        peerPID: Int32,
+        edgePort: UInt16,
+        active: [TunnelRecord],
+        recent: [TunnelRecord],
+        now: Double
+    ) -> TunnelRecord? {
+        let candidates = (active + recent).filter { tunnel in
+            guard tunnel.peerPid == peerPID,
+                  tunnel.edgePort == edgePort,
+                  tunnel.entryID != nil,
+                  tunnel.startedAt <= now else { return false }
+            if tunnel.active { return true }
+            let endedAt = tunnel.endedAt ?? tunnel.startedAt
+            return endedAt <= now && now - endedAt <= 120
+        }
+        return candidates.max { $0.startedAt < $1.startedAt }
     }
 
     /// Single-flight resolve of one pinned entry through the standard route
@@ -569,23 +832,59 @@ actor EdgeDaemon {
 
     // MARK: - Dial outcomes
 
-    /// A dial through the current upstream failed. With `reResolve` the
-    /// endpoint's cached snapshot is dropped, a single-flight resolve runs,
-    /// and the caller gets the upstream to retry once: the replacement, the
-    /// old one while strikes are low (a transient failure), or nil to give up.
-    func noteDialFailure(reResolve: Bool) async -> EdgeUpstream? {
+    /// A dial through `failed` failed. Auto immediately tries the next eligible
+    /// entry (excluding this one); Manual keeps its existing single-entry retry
+    /// behavior. Route identity is explicit because multiple tunnels can dial
+    /// different proxies concurrently.
+    func noteDialFailure(for failed: EdgeUpstream, reResolve: Bool) async -> EdgeUpstream? {
         dialFailures += 1
         let now = Date().timeIntervalSince1970
+        let state = loadState()
+        if state?.mode == .auto {
+            let windowOpen = now - (lastAutoFailureAt[failed.entryID] ?? 0) <= 30
+            var current = autoUpstreams[failed.entryID] ?? failed
+            current.strikes = windowOpen ? current.strikes + 1 : 1
+            autoUpstreams[failed.entryID] = current
+            if upstream?.entryID == failed.entryID { upstream = current }
+            lastAutoFailureAt[failed.entryID] = now
+            autoRetryAtByEntry[failed.entryID] = now + 30
+            autoErrors[failed.entryID] = "dial failed via \(failed.label)"
+            if failed.source == "script" {
+                removeProxyScriptCacheSnapshot(for: failed.entryID)
+                current.refreshAt = now
+                autoUpstreams[failed.entryID] = current
+                if upstream?.entryID == failed.entryID { upstream = current }
+            }
+            guard reResolve, let state else { return nil }
+            autoLastEntryID = failed.entryID
+            if case .upstream(let replacement) = await autoRoute(state: state, excluding: [failed.entryID]) {
+                return replacement
+            }
+            // A custom script can rotate its endpoint even when it is the
+            // pool's only eligible entry. If there was no usable alternate,
+            // retry that script once with its stale snapshot removed rather
+            // than leaving Auto permanently pinned to the failed URL.
+            if failed.source == "script",
+               stateForSelection(state).autoEligibleProxies(at: Date().timeIntervalSince1970)
+                .contains(where: { $0.id == failed.entryID }) {
+                autoRetryAtByEntry[failed.entryID] = nil
+                autoErrors[failed.entryID] = nil
+                if case .upstream(let replacement) = await autoRoute(state: state) {
+                    return replacement
+                }
+            }
+            return nil
+        }
+
         let windowOpen = now - lastDialFailureAt <= 30
         lastDialFailureAt = now
-        if var current = upstream {
-            current.strikes = windowOpen ? current.strikes + 1 : 1
-            upstream = current
-            if reResolve { removeProxyScriptCacheSnapshot(for: current.entryID) }
-        }
+        var current = upstream?.entryID == failed.entryID ? (upstream ?? failed) : failed
+        current.strikes = windowOpen ? current.strikes + 1 : 1
+        if upstream?.entryID == failed.entryID { upstream = current }
+        if reResolve { removeProxyScriptCacheSnapshot(for: failed.entryID) }
         guard reResolve else { return nil }
-        let strikes = upstream?.strikes ?? 0
-        if let state = loadState(), state.mode != .off,
+        let strikes = current.strikes
+        if let state, state.mode != .off,
            let outcome = await resolveLocked(state: state) {
             switch outcome.kind {
             case .success(let resolved, _): return resolved
@@ -596,11 +895,17 @@ actor EdgeDaemon {
         return upstream
     }
 
-    func noteUpstreamSuccess() {
-        if var current = upstream, current.strikes > 0 {
+    func noteUpstreamSuccess(entryID: String) {
+        if var cached = autoUpstreams[entryID], cached.strikes > 0 {
+            cached.strikes = 0
+            autoUpstreams[entryID] = cached
+        }
+        if var current = upstream, current.entryID == entryID, current.strikes > 0 {
             current.strikes = 0
             upstream = current
         }
+        autoRetryAtByEntry[entryID] = nil
+        autoErrors[entryID] = nil
     }
 
     /// One more tunnel served by direct fallback (its direct dial succeeded).
@@ -611,19 +916,36 @@ actor EdgeDaemon {
         log.warn("direct fallback: \(reason)")
     }
 
-    /// An established upstream tunnel died mid-stream or stalled. The same
-    /// policy signal as a failed dial — count it, drop the cached snapshot,
-    /// re-resolve so the next connection leaves the bad endpoint — except
-    /// this request can never be retried: bytes are already in flight. When
-    /// a re-resolve already replaced the upstream (entryID no longer
-    /// current), only the counter and the log record it.
+    /// An established upstream tunnel died mid-stream or stalled. Auto records
+    /// the failure against that tunnel's own entry and temporarily skips it;
+    /// Manual retains its re-resolve behavior. The in-flight request cannot be
+    /// retried because bytes are already in flight.
     func noteTunnelFailure(entryID: String, failure: EdgeTunnelFailure) async {
         streamFailures += 1
-        let label = upstream?.entryID == entryID ? (upstream?.label ?? entryID) : entryID
+        let state = loadState()
+        let label = autoUpstreams[entryID]?.label
+            ?? (upstream?.entryID == entryID ? (upstream?.label ?? entryID) : entryID)
         pushError("tunnel failed via \(label): \(failure.summary)")
         log.warn("tunnel failed via \(label): \(failure.summary)")
-        guard upstream?.entryID == entryID else { return }
         let now = Date().timeIntervalSince1970
+        if state?.mode == .auto {
+            let windowOpen = now - (lastAutoFailureAt[entryID] ?? 0) <= 30
+            if var current = autoUpstreams[entryID] ?? (upstream?.entryID == entryID ? upstream : nil) {
+                current.strikes = windowOpen ? current.strikes + 1 : 1
+                if current.source == "script" {
+                    current.refreshAt = now
+                    removeProxyScriptCacheSnapshot(for: entryID)
+                }
+                autoUpstreams[entryID] = current
+                if upstream?.entryID == entryID { upstream = current }
+            }
+            lastAutoFailureAt[entryID] = now
+            autoRetryAtByEntry[entryID] = now + 30
+            autoErrors[entryID] = "tunnel failed via \(label): \(failure.summary)"
+            nextCheckAt[entryID] = min(nextCheckAt[entryID] ?? .greatestFiniteMagnitude, now + 30)
+            return
+        }
+        guard upstream?.entryID == entryID else { return }
         let windowOpen = now - lastDialFailureAt <= 30
         lastDialFailureAt = now
         if var current = upstream {
@@ -635,14 +957,14 @@ actor EdgeDaemon {
         // probe exercises a full request through the proxy, so a zombie
         // provider cannot hide behind an open-but-silent tunnel.
         nextCheckAt[entryID] = min(nextCheckAt[entryID] ?? .greatestFiniteMagnitude, now + 30)
-        if let state = loadState(), state.mode != .off {
+        if let state, state.mode != .off {
             _ = await resolveLocked(state: state)
         }
     }
 
     // MARK: - Tunnels
 
-    func registerTunnel(clientPort: UInt16?, edgePort: UInt16, label: String?) {
+    func registerTunnel(clientPort: UInt16?, edgePort: UInt16, entryID: String?, label: String?) {
         tunnelsTotal += 1
         guard let clientPort else { return }
         // Resolve the peer now: the client TCP connection is guaranteed to be
@@ -652,10 +974,9 @@ actor EdgeDaemon {
         tunnelsActive[clientPort] = TunnelRecord(
             clientPort: clientPort,
             edgePort: edgePort,
-            entryID: upstream?.entryID,
-            // Only the label the relay actually dialed with: `upstream`
-            // survives mode switches, so a direct tunnel must never be
-            // mislabeled with the last upstream it did not use.
+            entryID: entryID,
+            // Keep the exact route selected for this connection. The shared
+            // `upstream` field can advance while several tunnels are active.
             label: label,
             peerPid: peer?.pid,
             peerName: peer?.name,

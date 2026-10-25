@@ -50,6 +50,17 @@ struct EdgeHTTPRequestTests {
         #expect(request.headers["authorization"] == "Bearer abc")
     }
 
+    @Test func parsesFreeUsageLimitReportsAsAdminRequests() throws {
+        let request = try #require(parse(
+            "POST /__relaydock/free-usage-limit?retryAfterMs=34033000&entryID=px_a HTTP/1.1\r\nContent-Length: 0\r\n\r\n"
+        ))
+        #expect(request.kind == .admin(
+            method: "POST",
+            path: "/__relaydock/free-usage-limit",
+            query: ["retryAfterMs": "34033000", "entryID": "px_a"]
+        ))
+    }
+
     @Test func lowercasesHeaderNamesAndKeepsFirstOccurrence() throws {
         let request = try #require(parse("CONNECT a:1 HTTP/1.1\r\nX-Test: one\r\nx-test: two\r\n\r\n"))
         #expect(request.headers["x-test"] == "one")

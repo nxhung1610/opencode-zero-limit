@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE="$ROOT/macOS/RelayDock"
 OUTPUT="$ROOT/build/RelayDock.app"
 ICON_SOURCE="$PACKAGE/Assets/RelayDockAppIcon.png"
+FREE_USAGE_PLUGIN="$PACKAGE/Resources/relaydock-free-usage-limit.js"
 
 if [[ ! -f "$ICON_SOURCE" ]]; then
   echo "Missing app icon: $ICON_SOURCE" >&2
@@ -32,6 +33,7 @@ cp -R "$PACKAGE/.build/release/$RESOURCE_BUNDLE" "$BUNDLE/Contents/Resources/$RE
 rm -f "$BUNDLE/Contents/Resources/relaydock-launch" "$BUNDLE/Contents/Resources/relaydock-edge"
 cp "$PACKAGE/.build/release/RelayDockLauncher" "$BUNDLE/Contents/Resources/relaydock-launch"
 cp "$PACKAGE/.build/release/RelayDockEdge" "$BUNDLE/Contents/Resources/relaydock-edge"
+cp "$FREE_USAGE_PLUGIN" "$BUNDLE/Contents/Resources/relaydock-free-usage-limit.js"
 chmod +x "$BUNDLE/Contents/Resources/relaydock-launch" "$BUNDLE/Contents/Resources/relaydock-edge"
 
 while read -r size name; do
@@ -55,6 +57,7 @@ test -x "$BUNDLE/Contents/MacOS/RelayDock"
 test -s "$BUNDLE/Contents/Resources/AppIcon.icns"
 test -x "$BUNDLE/Contents/Resources/relaydock-launch"
 test -x "$BUNDLE/Contents/Resources/relaydock-edge"
+test -s "$BUNDLE/Contents/Resources/relaydock-free-usage-limit.js"
 
 if [[ -e "$OUTPUT" ]]; then
   if [[ ! -d "$OUTPUT/Contents" ]]; then
@@ -72,6 +75,7 @@ if [[ -e "$OUTPUT" ]]; then
   rm -f "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
   cp "$BUNDLE/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-launch"
   cp "$BUNDLE/Contents/Resources/relaydock-edge" "$OUTPUT/Contents/Resources/relaydock-edge"
+  cp -f "$BUNDLE/Contents/Resources/relaydock-free-usage-limit.js" "$OUTPUT/Contents/Resources/relaydock-free-usage-limit.js"
   chmod +x "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
 else
   mv "$BUNDLE" "$OUTPUT"
@@ -88,4 +92,5 @@ test -s "$OUTPUT/Contents/Resources/AppIcon.icns"
 test -d "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
 test -x "$OUTPUT/Contents/Resources/relaydock-launch"
 test -x "$OUTPUT/Contents/Resources/relaydock-edge"
+test -s "$OUTPUT/Contents/Resources/relaydock-free-usage-limit.js"
 echo "Built $OUTPUT"

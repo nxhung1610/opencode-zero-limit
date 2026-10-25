@@ -43,14 +43,27 @@ public struct ProxyEntry: Codable, Equatable, Identifiable, Sendable {
     public var script: String?
     public var enabled: Bool
     public var health: ProxyHealth?
+    /// Runtime overlay from `FreeUsageLimitStore`; intentionally excluded
+    /// from `proxies.json` so Edge can persist cooldowns without racing app
+    /// edits to the user's proxy configuration.
+    public var freeUsageLimitedUntil: Double?
 
-    public init(id: String, label: String, url: String, script: String? = nil, enabled: Bool = true, health: ProxyHealth? = nil) {
+    public init(
+        id: String,
+        label: String,
+        url: String,
+        script: String? = nil,
+        enabled: Bool = true,
+        health: ProxyHealth? = nil,
+        freeUsageLimitedUntil: Double? = nil
+    ) {
         self.id = id
         self.label = label
         self.url = url
         self.script = script
         self.enabled = enabled
         self.health = health
+        self.freeUsageLimitedUntil = freeUsageLimitedUntil
     }
 
     /// A custom script cannot be validated without running it; it counts as
@@ -62,6 +75,11 @@ public struct ProxyEntry: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var isCustomScript: Bool { script != nil }
+
+    public func isFreeUsageLimited(at now: Double = Date().timeIntervalSince1970) -> Bool {
+        guard let freeUsageLimitedUntil else { return false }
+        return freeUsageLimitedUntil > now
+    }
 
     /// Identifies the definition a health check ran against.
     var checkFingerprint: String { script ?? url }
@@ -82,6 +100,19 @@ public struct ProxyEntry: Codable, Equatable, Identifiable, Sendable {
             ?? (script != nil ? "Custom script" : proxyLabel(for: url))
         enabled = try container.decodeIfPresent(Bool.self, forKey: ProxyCodingKey("enabled")) ?? true
         health = try container.decodeIfPresent(ProxyHealth.self, forKey: ProxyCodingKey("health"))
+        // The deadline lives in a separate RelayDock-owned sidecar. Older or
+        // externally-created proxies.json files therefore decode as clear.
+        freeUsageLimitedUntil = nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: ProxyCodingKey.self)
+        try container.encode(id, forKey: ProxyCodingKey("id"))
+        try container.encode(label, forKey: ProxyCodingKey("label"))
+        try container.encode(url, forKey: ProxyCodingKey("url"))
+        try container.encodeIfPresent(script, forKey: ProxyCodingKey("script"))
+        try container.encode(enabled, forKey: ProxyCodingKey("enabled"))
+        try container.encodeIfPresent(health, forKey: ProxyCodingKey("health"))
     }
 }
 
@@ -122,9 +153,14 @@ public struct ProxyState: Codable, Equatable, Sendable {
         enabledProxies.filter(\.hasValidDefinition)
     }
 
-    /// Auto-eligible proxies include unchecked entries, but exclude entries with a known failed check.
+    /// Auto-eligible proxies include unchecked entries, but exclude entries
+    /// with a known failed check or an active OpenCode free-usage cooldown.
     public var autoEligibleProxies: [ProxyEntry] {
-        validEnabledProxies.filter { $0.health?.ok != false }
+        autoEligibleProxies(at: Date().timeIntervalSince1970)
+    }
+
+    public func autoEligibleProxies(at now: Double) -> [ProxyEntry] {
+        validEnabledProxies.filter { $0.health?.ok != false && !$0.isFreeUsageLimited(at: now) }
     }
 
     public init(from decoder: Decoder) throws {
@@ -176,6 +212,7 @@ public enum ProxyStoreError: LocalizedError, Equatable {
     case proxyAlreadyExists(String)
     case noManualSelection
     case manualSelectionDisabled(String)
+    case proxyFreeUsageLimited(String, Double)
     case invalidProxyConfiguration(String)
     case scriptFailed(String, String)
     case proxyNotFound
@@ -183,6 +220,7 @@ public enum ProxyStoreError: LocalizedError, Equatable {
     case autoHasNoEnabledProxy
     case autoHasNoValidProxy
     case autoHasNoHealthyProxy
+    case autoHasFreeUsageLimit(Double)
 
     public var errorDescription: String? {
         switch self {
@@ -199,6 +237,8 @@ public enum ProxyStoreError: LocalizedError, Equatable {
             "\(label) is already in the pool."
         case .noManualSelection: "No proxy is selected for manual mode. Choose a proxy, or switch the proxy mode to Off."
         case .manualSelectionDisabled(let label): "The selected proxy (\(label)) is disabled. Enable it or choose another enabled proxy."
+        case .proxyFreeUsageLimited(let label, let until):
+            "The selected proxy (\(label)) is temporarily excluded until \(Date(timeIntervalSince1970: until).formatted(date: .omitted, time: .shortened)) after an OpenCode free-usage limit."
         case .invalidProxyConfiguration(let label): "The selected proxy (\(label)) has an invalid or unsupported URL. Fix its configuration before routing OpenCode."
         case .scriptFailed(let label, let reason): "\(label) could not resolve a proxy. \(reason)"
         case .proxyNotFound: "That proxy is no longer in the pool."
@@ -206,6 +246,8 @@ public enum ProxyStoreError: LocalizedError, Equatable {
         case .autoHasNoEnabledProxy: "Auto mode needs at least one enabled proxy. Enable a proxy, or switch the proxy mode to Off."
         case .autoHasNoValidProxy: "Auto mode has no enabled proxy with a valid supported URL. Fix the proxy pool, or switch the proxy mode to Off."
         case .autoHasNoHealthyProxy: "No enabled proxy passed its last test. Test the pool again, enable a proxy, or switch the proxy mode to Off."
+        case .autoHasFreeUsageLimit(let until):
+            "All usable Auto proxies are paused until the OpenCode free-usage reset at \(Date(timeIntervalSince1970: until).formatted(date: .omitted, time: .shortened))."
         }
     }
 }
@@ -244,6 +286,14 @@ public struct ProxyStore: Sendable {
         } catch {
             throw ProxyStoreError.unreadable(error.localizedDescription)
         }
+    }
+
+    /// Reads the saved proxy policy and overlays Edge's separate free-tier
+    /// cooldown state. Kept separate from `load()` for callers that need the
+    /// raw persisted configuration.
+    public func loadWithFreeUsageLimits(now: Double = Date().timeIntervalSince1970) throws -> ProxyState {
+        let state = try load()
+        return FreeUsageLimitStore(configDirectory: fileURL.deletingLastPathComponent()).applying(to: state, now: now)
     }
 
     @discardableResult
@@ -425,7 +475,7 @@ public struct ProxyStore: Sendable {
     /// so live consumers (RelayDock Edge) execute the same rules without
     /// writing this store.
     public func selectForSpawn(accountID: String = "default") throws -> String? {
-        var state = try load()
+        var state = try loadWithFreeUsageLimits()
         guard let route = try resolveSpawnRoute(state: state, accountID: accountID, bindings: state.bindings) else {
             return nil
         }
@@ -487,6 +537,12 @@ public func resolveSpawnRoute(
         guard selected.hasValidDefinition else {
             throw ProxyStoreError.invalidProxyConfiguration(selected.label)
         }
+        if selected.isFreeUsageLimited() {
+            throw ProxyStoreError.proxyFreeUsageLimited(
+                selected.label,
+                selected.freeUsageLimitedUntil ?? Date().timeIntervalSince1970
+            )
+        }
         return SpawnRoute(entryID: selected.id, proxyURL: try resolveProxyEntryURL(selected), isNewBinding: false)
     }
 
@@ -495,7 +551,13 @@ public func resolveSpawnRoute(
     let valid = state.validEnabledProxies
     guard !valid.isEmpty else { throw ProxyStoreError.autoHasNoValidProxy }
     let usable = state.autoEligibleProxies
-    guard !usable.isEmpty else { throw ProxyStoreError.autoHasNoHealthyProxy }
+    guard !usable.isEmpty else {
+        if let retryAt = valid.compactMap(\.freeUsageLimitedUntil)
+            .filter({ $0 > Date().timeIntervalSince1970 }).min() {
+            throw ProxyStoreError.autoHasFreeUsageLimit(retryAt)
+        }
+        throw ProxyStoreError.autoHasNoHealthyProxy
+    }
     if let boundID = bindings[accountID], let bound = usable.first(where: { $0.id == boundID }) {
         return SpawnRoute(entryID: bound.id, proxyURL: try resolveProxyEntryURL(bound), isNewBinding: false)
     }

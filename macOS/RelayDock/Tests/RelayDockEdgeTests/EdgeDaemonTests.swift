@@ -4,6 +4,131 @@ import Testing
 @testable import RelayDockEdge
 
 struct EdgeDaemonTests {
+    @Test func freeUsageLimitReportUsesFreshSameProcessTunnelAndEdgePort() {
+        let now = 2_000.0
+        func tunnel(
+            pid: Int32?,
+            port: UInt16 = 57_211,
+            entryID: String? = "px_a",
+            startedAt: Double,
+            endedAt: Double? = nil,
+            active: Bool
+        ) -> EdgeDaemon.TunnelRecord {
+            EdgeDaemon.TunnelRecord(
+                clientPort: 40_000,
+                edgePort: port,
+                entryID: entryID,
+                label: entryID,
+                peerPid: pid,
+                peerName: "opencode",
+                startedAt: startedAt,
+                endedAt: endedAt,
+                bytesUp: 0,
+                bytesDown: 0,
+                active: active
+            )
+        }
+        let match = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [tunnel(pid: 123, startedAt: now - 5, active: true)],
+            recent: [
+                tunnel(pid: 123, startedAt: now - 10, endedAt: now - 1, active: false),
+                tunnel(pid: 999, startedAt: now - 1, endedAt: now - 1, active: false),
+                tunnel(pid: 123, port: 57_212, startedAt: now, endedAt: now, active: false),
+                tunnel(pid: 123, startedAt: now - 200, endedAt: now - 121, active: false),
+            ],
+            now: now
+        )
+
+        #expect(match?.entryID == "px_a")
+        #expect(match?.startedAt == now - 5)
+        #expect(EdgeDaemon.validFreeUsageCooldown(34_033_000))
+        #expect(!EdgeDaemon.validFreeUsageCooldown(999))
+        #expect(!EdgeDaemon.validFreeUsageCooldown(604_800_001))
+    }
+
+    @Test func freeUsageLimitCooldownPersistsAndAutoSkipsThatProxy() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-route-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        let now = Date().timeIntervalSince1970
+
+        let result = await daemon.persistFreeUsageLimit(
+            entryID: imported.proxies[0].id,
+            retryAfterMs: 3_600_000,
+            now: now
+        )
+        let route = await daemon.decideRoute()
+        var refreshed = try store.loadWithFreeUsageLimits(now: now)
+
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
+        #expect(refreshed.proxies[0].isFreeUsageLimited(at: now))
+        guard case .upstream(let selected) = route else {
+            Issue.record("Auto should continue through an available proxy")
+            return
+        }
+        #expect(selected.entryID == imported.proxies[1].id)
+
+        _ = await daemon.persistFreeUsageLimit(
+            entryID: imported.proxies[1].id,
+            retryAfterMs: 3_600_000,
+            now: now
+        )
+        refreshed = try store.loadWithFreeUsageLimits(now: now)
+        let exhaustedRoute = await daemon.decideRoute()
+        #expect(refreshed.autoEligibleProxies(at: now).isEmpty)
+        guard case .refuse(_, let retryAt) = exhaustedRoute else {
+            Issue.record("Auto must refuse while every proxy is waiting for reset")
+            return
+        }
+        #expect(retryAt == now + 3_600)
+    }
+
+    @Test func explicitFreeUsageReportsOnlyAcceptAnOpenCodeReporter() {
+        #expect(EdgeDaemon.isOpenCodeProcessName("opencode"))
+        #expect(!EdgeDaemon.isOpenCodeProcessName("curl"))
+        #expect(!EdgeDaemon.isOpenCodeProcessName("node"))
+    }
+
+    @Test func manualAndPinnedRoutesRefuseAProxyDuringItsFreeLimitCooldown() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-manual-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080")
+        let entry = imported.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        let now = Date().timeIntervalSince1970
+        _ = await daemon.persistFreeUsageLimit(entryID: entry.id, retryAfterMs: 3_600_000, now: now)
+
+        let manual = await daemon.decideRoute()
+        let pinned = await daemon.decideRoute(pinning: entry.id)
+
+        for route in [manual, pinned] {
+            guard case .refuse(_, let retryAt) = route else {
+                Issue.record("manual and pinned routing must not reuse a rate-limited proxy")
+                return
+            }
+            #expect(retryAt == now + 3_600)
+        }
+    }
+
     @Test func readsExpiryFromScriptSnapshots() {
         let now = 1_000_000.0
         #expect(EdgeDaemon.snapshotExpiry(snapshot: #"{"expiresAt": 1777000000000}"#, now: now) == 1_777_000_000)
@@ -106,19 +231,130 @@ struct EdgeDaemonTests {
             log: EdgeLog(url: directory.appending(path: "edge.log"))
         )
 
-        _ = try store.importProxies("http://proxy-a.example:8080")
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let entry = imported.proxies[0]
         _ = try store.setMode(.auto, manualId: nil)
         await daemon.warmup()
 
         let staleLabel = await daemon.status().upstream?.label
         #expect(staleLabel != nil, "fixture needs a resolved upstream for the regression to be observable")
 
-        await daemon.registerTunnel(clientPort: 40_001, edgePort: 57_999, label: nil)
-        await daemon.registerTunnel(clientPort: 40_002, edgePort: 57_999, label: "proxy-a.example:8080")
+        await daemon.registerTunnel(clientPort: 40_001, edgePort: 57_999, entryID: nil, label: nil)
+        await daemon.registerTunnel(clientPort: 40_002, edgePort: 57_999, entryID: entry.id, label: "proxy-a.example:8080")
 
         let tunnels = await daemon.status().tunnels
         #expect(tunnels.first { $0.clientPort == 40_001 }?.label == nil)
         #expect(tunnels.first { $0.clientPort == 40_002 }?.label == "proxy-a.example:8080")
+    }
+
+    @Test func autoRoutesRoundRobinAcrossEligibleProxiesPerNewTunnel() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-auto-rotation-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies(
+            "http://proxy-a.example:8080\nhttp://proxy-b.example:8080\nhttp://proxy-c.example:8080"
+        )
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        await daemon.warmup()
+
+        var selected: [String] = []
+        for _ in 0..<7 {
+            guard case .upstream(let upstream) = await daemon.decideRoute() else {
+                Issue.record("Auto must select an eligible proxy for each new tunnel")
+                return
+            }
+            selected.append(upstream.entryID)
+        }
+        let ids = imported.proxies.map(\.id)
+        #expect(selected == [ids[0], ids[1], ids[2], ids[0], ids[1], ids[2], ids[0]])
+    }
+
+    @Test func autoDialFailureRetriesThroughAnotherEligibleProxy() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-auto-retry-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies(
+            "http://proxy-a.example:8080\nhttp://proxy-b.example:8080"
+        )
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        await daemon.warmup()
+
+        guard case .upstream(let first) = await daemon.decideRoute(),
+              let replacement = await daemon.noteDialFailure(for: first, reResolve: true) else {
+            Issue.record("a dial failure should retry through another eligible proxy")
+            return
+        }
+        #expect(replacement.entryID != first.entryID)
+        #expect(imported.proxies.contains { $0.id == replacement.entryID })
+    }
+
+    @Test func autoDialFailureReResolvesASingleCustomEntry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-auto-single-script-retry-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.addProxyScript(name: "Rotating", script: "return 'http://proxy.example:8080';")
+        let entry = imported.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        await daemon.warmup()
+
+        guard case .upstream(let first) = await daemon.decideRoute(),
+              let replacement = await daemon.noteDialFailure(for: first, reResolve: true) else {
+            Issue.record("a single custom entry should get one fresh script resolution after a dial failure")
+            return
+        }
+
+        #expect(replacement.entryID == entry.id)
+        #expect(replacement.source == "script")
+        #expect(replacement.url == first.url)
+        #expect(await daemon.status().counters.resolutions >= 2)
+    }
+
+    @Test func manualModeKeepsItsSelectedProxy() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-manual-route-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies(
+            "http://proxy-a.example:8080\nhttp://proxy-b.example:8080"
+        )
+        let selectedID = imported.proxies[1].id
+        _ = try store.setMode(.manual, manualId: selectedID)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+
+        for _ in 0..<3 {
+            guard case .upstream(let upstream) = await daemon.decideRoute() else {
+                Issue.record("Manual must keep selecting its configured proxy")
+                return
+            }
+            #expect(upstream.entryID == selectedID)
+        }
     }
 
     // MARK: - Direct fallback (opt-in)

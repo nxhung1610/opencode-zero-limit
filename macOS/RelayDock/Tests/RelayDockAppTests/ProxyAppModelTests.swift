@@ -143,7 +143,8 @@ struct ProxyAppModelTests {
                 EdgeCheckResponse(results: [
                     entryID: .init(ok: true, latencyMs: 42, checkedAt: checkedAt),
                 ])
-            }
+            },
+            freeModelProvider: { nil }
         )
         model.load()
 
@@ -153,6 +154,177 @@ struct ProxyAppModelTests {
         let health = model.state?.proxies.first(where: { $0.id == entryID })?.health
         #expect(health?.ok == true)
         #expect(health?.latencyMs == 42)
+    }
+
+    @Test @MainActor func testAllRunsOpenCodeFreeUsageProbeOnlyForHealthyEnabledEntries() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies(
+            "http://healthy.example:8080\nhttp://failed.example:8081\nhttp://limited.example:8082\nhttp://disabled.example:8083"
+        )
+        let healthyID = imported.proxies[0].id
+        let failedID = imported.proxies[1].id
+        let limitedID = imported.proxies[2].id
+        let disabledID = imported.proxies[3].id
+        _ = try store.setEnabled(disabledID, enabled: false)
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(limitedID, until: Date().timeIntervalSince1970 + 3_600)
+        try writeEdgeConfig(in: directory)
+        let recorder = OpenCodeProbeRecorder()
+        let model = ProxyAppModel(
+            store: store,
+            edgeCheckRunner: { _ in
+                EdgeCheckResponse(results: [
+                    healthyID: .init(ok: true, latencyMs: 12, checkedAt: 1),
+                    failedID: .init(ok: false, checkedAt: 1, error: "unreachable"),
+                    limitedID: .init(ok: true, latencyMs: 14, checkedAt: 1),
+                ])
+            },
+            freeModelProvider: { "opencode/beam-free" },
+            freeUsageProbe: { entry, proxyURL, config, model in
+                recorder.record(entryID: entry.id, proxyURL: proxyURL, port: config.port, model: model)
+                return entry.id == healthyID ? .freeUsageLimited(retryAfterMs: 3_600_000) : .passed
+            }
+        )
+        model.load()
+
+        await model.testAll()
+
+        #expect(recorder.records == [
+            .init(entryID: healthyID, proxyURL: "http://healthy.example:8080", port: 57_211, model: "opencode/beam-free"),
+        ])
+        #expect(model.state?.proxies.first(where: { $0.id == healthyID })?.isFreeUsageLimited() == true)
+        #expect(model.state?.proxies.first(where: { $0.id == disabledID })?.enabled == false)
+        #expect(model.state?.proxies.first(where: { $0.id == disabledID })?.isFreeUsageLimited() == false)
+    }
+
+    @Test @MainActor func testAllRunsQuotaProbesInParallelAndUpdatesRowsAsTheyFinish() async throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies(
+            "http://first.example:8080\nhttp://second.example:8080\nhttp://third.example:8080"
+        )
+        try writeEdgeConfig(in: directory)
+        let ids = imported.proxies.map(\.id)
+        let recorder = ConcurrentProbeRecorder()
+        let model = ProxyAppModel(
+            store: store,
+            edgeCheckRunner: { _ in
+                EdgeCheckResponse(results: Dictionary(uniqueKeysWithValues: ids.map {
+                    ($0, .init(ok: true, latencyMs: 10, checkedAt: 1))
+                }))
+            },
+            freeModelProvider: { "opencode/mimo-v2.6-flash-free" },
+            freeUsageProbe: { entry, _, _, _ in
+                await recorder.started(entry.id)
+                await recorder.waitForRelease(entry.id)
+                await recorder.finished()
+                return .passed
+            }
+        )
+        model.load()
+
+        let testRun = Task { await model.testAll() }
+        await recorder.waitUntilStarted(ids.count)
+        #expect(ids.allSatisfy { model.freeUsageProbeStatuses[$0] == .checking })
+
+        // Hold the slower probes until the first result has reached the model.
+        // This proves progressive UI state without relying on a timing window
+        // that can disappear under load from the AppKit performance fixtures.
+        await recorder.release(ids[0])
+        for _ in 0..<500 {
+            if model.freeUsageProbeStatuses[ids[0]] == .passed { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let observedProgressiveCompletion = model.freeUsageProbeStatuses[ids[0]] == .passed
+            && ids.dropFirst().allSatisfy { model.freeUsageProbeStatuses[$0] == .checking }
+        await recorder.release(ids[1])
+        await recorder.release(ids[2])
+        await testRun.value
+
+        #expect(await recorder.maximumConcurrent() == ids.count)
+        #expect(observedProgressiveCompletion)
+        #expect(model.freeUsageProbeStatuses[ids[0]] == .passed)
+        #expect(model.freeUsageProbeStatuses[ids[1]] == .passed)
+        #expect(model.freeUsageProbeStatuses[ids[2]] == .passed)
+    }
+
+    @Test func freeModelParserOnlyReturnsOpenCodeFreeModels() {
+        let output = """
+        openai/gpt-6.1-sol
+        opencode/beam-free
+        opencode/mimo-v2.6-flash-free
+        opencode/big-pickle
+        opencode/paid-model
+        opencode/deepseek-v4.1-flash-free
+        """
+        #expect(OpenCodeFreeUsageProbe.freeModelIDs(in: output) == [
+            "opencode/beam-free", "opencode/mimo-v2.6-flash-free", "opencode/big-pickle",
+            "opencode/deepseek-v4.1-flash-free",
+        ])
+    }
+
+    @Test func findFreeModelPrefersMimoV26FlashFree() async {
+        let model = await OpenCodeFreeUsageProbe.findFreeModel(environment: [:]) { _, _, _ in
+            .init(
+                status: 0,
+                stdout: "opencode/beam-free\nopencode/mimo-v2.6-flash-free\nopencode/big-pickle\n",
+                timedOut: false
+            )
+        }
+
+        #expect(model == "opencode/mimo-v2.6-flash-free")
+    }
+
+    @Test func freeUsageLimitOutputPreservesProviderCooldown() {
+        let cooldown = OpenCodeFreeUsageProbe.freeUsageLimitCooldown(
+            in: #"{"error":{"name":"FreeUsageLimitError","retryAfterMs":3600000}}"#,
+            nowMilliseconds: 1_000
+        )
+
+        #expect(cooldown == 3_600_000)
+        #expect(OpenCodeFreeUsageProbe.freeUsageLimitCooldown(in: "request completed") == nil)
+    }
+
+    @Test func liveFreeUsageProbeUsesAnIsolatedLoopbackEdgePinnedToTheTarget() async {
+        let entry = ProxyEntry(id: "px_probe", label: "Probe", url: "http://proxy.example:8080")
+        let recorder = OpenCodeCommandRecorder()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let outcome = await OpenCodeFreeUsageProbe.run(
+            entry: entry,
+            proxyURL: entry.url,
+            edgeConfig: EdgeConfigFile(port: 57_211),
+            model: "opencode/beam-free",
+            environment: ["HTTP_PROXY": "http://old-proxy.example:3128"],
+            runner: { command, environment, timeout in
+                recorder.record(command: command, environment: environment, timeout: timeout)
+                return .init(status: 0, stdout: "", timedOut: false)
+            },
+            bridgeFactory: { _, _, _ in
+                .init(
+                    proxyURL: "http://127.0.0.1:57212",
+                    port: 57_212,
+                    configDirectory: temporaryDirectory,
+                    cleanup: {}
+                )
+            }
+        )
+        let run = recorder.snapshot
+
+        #expect(outcome == .passed)
+        #expect(run?.command.contains("opencode run --standalone") == true)
+        #expect(run?.command.contains("opencode/beam-free") == true)
+        #expect(run?.environment["HTTP_PROXY"] == "http://127.0.0.1:57212")
+        #expect(run?.environment["HTTPS_PROXY"] == "http://127.0.0.1:57212")
+        #expect(run?.environment["RELAYDOCK_TEST_PROXY_URL"] == "http://127.0.0.1:57212")
+        #expect(run?.environment["NO_PROXY"] == "localhost,127.0.0.1")
+        #expect(run?.environment["no_proxy"] == "localhost,127.0.0.1")
+        #expect(run?.environment["RELAYDOCK_TEST_PROXY_ID"] == entry.id)
+        #expect(run?.environment["RELAYDOCK_TEST_EDGE_PORT"] == "57212")
+        #expect(run?.timeout == 45)
     }
 
     @Test @MainActor func testAllFallsBackInProcessWhenEdgeIsNotConfigured() async throws {
@@ -279,6 +451,22 @@ struct ProxyAppModelTests {
         #expect(unconfigured.edgePanel == .notConfigured)
     }
 
+    @Test @MainActor func visibleModelRefreshPicksUpEdgeFreeUsageCooldowns() throws {
+        let (directory, store) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://limited.example:8080\nhttp://available.example:8080")
+        let model = ProxyAppModel(store: store)
+        model.load()
+        #expect(model.state?.autoEligibleProxies.count == 2)
+
+        try FreeUsageLimitStore(configDirectory: directory)
+            .flag(imported.proxies[0].id, until: Date().timeIntervalSince1970 + 3_600)
+        model.refreshProxyStateFromDisk()
+
+        #expect(model.state?.proxies[0].isFreeUsageLimited() == true)
+        #expect(model.state?.autoEligibleProxies.map(\.id) == [imported.proxies[1].id])
+    }
+
     @Test @MainActor func edgeAttributionGroupsTunnelsByPeer() async throws {
         let (directory, store) = makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -323,5 +511,95 @@ struct ProxyAppModelTests {
         let store = checker.map { ProxyStore(configDirectory: directory, healthChecker: $0) }
             ?? ProxyStore(configDirectory: directory)
         return (directory, store)
+    }
+
+    private final class OpenCodeProbeRecorder: @unchecked Sendable {
+        struct Record: Equatable {
+            var entryID: String
+            var proxyURL: String
+            var port: Int
+            var model: String
+        }
+
+        private let lock = NSLock()
+        private var storedRecords: [Record] = []
+
+        var records: [Record] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedRecords
+        }
+
+        func record(entryID: String, proxyURL: String, port: Int, model: String) {
+            lock.lock()
+            storedRecords.append(Record(entryID: entryID, proxyURL: proxyURL, port: port, model: model))
+            lock.unlock()
+        }
+    }
+
+    private final class OpenCodeCommandRecorder: @unchecked Sendable {
+        struct Invocation: Sendable {
+            var command: String
+            var environment: [String: String]
+            var timeout: TimeInterval
+        }
+
+        private let lock = NSLock()
+        private var storedInvocation: Invocation?
+
+        var snapshot: Invocation? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedInvocation
+        }
+
+        func record(command: String, environment: [String: String], timeout: TimeInterval) {
+            lock.lock()
+            storedInvocation = Invocation(command: command, environment: environment, timeout: timeout)
+            lock.unlock()
+        }
+    }
+
+    private actor ConcurrentProbeRecorder {
+        private var active = 0
+        private var maximum = 0
+        private var startedIDs: Set<String> = []
+        private var releasedIDs: Set<String> = []
+        private var startWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        private var releaseWaiters: [String: CheckedContinuation<Void, Never>] = [:]
+
+        func started(_ entryID: String) {
+            active += 1
+            maximum = max(maximum, active)
+            startedIDs.insert(entryID)
+            let ready = startWaiters.filter { startedIDs.count >= $0.count }
+            startWaiters.removeAll { startedIDs.count >= $0.count }
+            ready.forEach { $0.continuation.resume() }
+        }
+
+        func waitUntilStarted(_ count: Int) async {
+            guard startedIDs.count < count else { return }
+            await withCheckedContinuation { continuation in
+                startWaiters.append((count, continuation))
+            }
+        }
+
+        func waitForRelease(_ entryID: String) async {
+            guard !releasedIDs.contains(entryID) else { return }
+            await withCheckedContinuation { continuation in
+                releaseWaiters[entryID] = continuation
+            }
+        }
+
+        func release(_ entryID: String) {
+            releasedIDs.insert(entryID)
+            releaseWaiters.removeValue(forKey: entryID)?.resume()
+        }
+
+        func finished() {
+            active -= 1
+        }
+
+        func maximumConcurrent() -> Int { maximum }
     }
 }

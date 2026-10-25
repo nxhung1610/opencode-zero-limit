@@ -85,6 +85,31 @@ final class EdgeClientConnection: @unchecked Sendable {
             }
             let outcomes = await daemon.runChecks(scope: scope)
             try await sendJSON(EdgeCheckResponse(outcomes: outcomes))
+        case ("POST", "/__relaydock/free-usage-limit"):
+            guard let rawRetryAfterMs = query["retryAfterMs"],
+                  let retryAfterMs = Double(rawRetryAfterMs) else {
+                try await sendSimple(status: 400, reason: "Bad Request", body: "retryAfterMs is required.")
+                return
+            }
+            let result = await daemon.reportFreeUsageLimit(
+                retryAfterMs: retryAfterMs,
+                reportClientPort: clientPort,
+                edgePort: UInt16(truncatingIfNeeded: config.port),
+                explicitEntryID: query["entryID"]
+            )
+            switch result {
+            case .flagged(let entryID, _):
+                try await sendSimple(status: 200, reason: "OK", body: "Proxy \(entryID) paused until reset.")
+            case .unmatched:
+                try await sendSimple(
+                    status: 409, reason: "Conflict",
+                    body: "No matching proxy entry or recent OpenCode tunnel could be matched to this report."
+                )
+            case .invalidCooldown:
+                try await sendSimple(status: 400, reason: "Bad Request", body: "retryAfterMs is outside the supported range.")
+            case .persistenceFailed:
+                try await sendSimple(status: 500, reason: "Internal Server Error", body: "Could not persist the proxy cooldown.")
+            }
         case ("POST", "/__relaydock/shutdown"):
             try await sendJSON(["ok": true])
             log.info("shutdown requested through the admin API")
@@ -331,12 +356,10 @@ final class EdgeClientConnection: @unchecked Sendable {
         let upstream: EdgeUpstream
     }
 
-    /// One internal retry on dial failure: single-flight resolve, then retry
-    /// with the replacement upstream, the old one while strikes are low, or
-    /// give up. The client only ever sees the outcome. A pinned listener
-    /// retries within its own entry (the global policy is never consulted),
-    /// and a warm socket passed in is offered to the first attempt only —
-    /// a stale pooled socket can never be redeemed twice.
+    /// One internal retry on dial failure. Auto retries through the next
+    /// eligible entry; Manual re-resolves its selected entry, and a pinned
+    /// listener retries only within its own entry. A warm socket is offered
+    /// to the first attempt only — a stale pooled socket can never be reused.
     private func withDialRetry(
         _ upstream: EdgeUpstream,
         pinnedEntryID: String? = nil,
@@ -348,7 +371,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             if let pinnedEntryID {
                 await daemon.notePinnedSuccess(entryID: pinnedEntryID)
             } else {
-                await daemon.noteUpstreamSuccess()
+                await daemon.noteUpstreamSuccess(entryID: upstream.entryID)
             }
             return DialedTunnel(tunnel: tunnel, upstream: upstream)
         } catch {
@@ -368,14 +391,14 @@ final class EdgeClientConnection: @unchecked Sendable {
                     return nil
                 }
             }
-            guard let replacement = await daemon.noteDialFailure(reResolve: true) else { return nil }
+            guard let replacement = await daemon.noteDialFailure(for: upstream, reResolve: true) else { return nil }
             do {
                 let tunnel = try await operation(replacement, nil)
-                await daemon.noteUpstreamSuccess()
+                await daemon.noteUpstreamSuccess(entryID: replacement.entryID)
                 return DialedTunnel(tunnel: tunnel, upstream: replacement)
             } catch {
                 log.warn("retry dial failed via \(replacement.label): \(error.localizedDescription)")
-                _ = await daemon.noteDialFailure(reResolve: false)
+                _ = await daemon.noteDialFailure(for: replacement, reResolve: false)
                 return nil
             }
         }
@@ -393,6 +416,7 @@ final class EdgeClientConnection: @unchecked Sendable {
         await daemon.registerTunnel(
             clientPort: clientPort,
             edgePort: UInt16(truncatingIfNeeded: config.port),
+            entryID: upstreamEntryID,
             label: label
         )
         let startedAt = Date().timeIntervalSince1970

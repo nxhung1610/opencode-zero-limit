@@ -185,9 +185,20 @@ struct MenuBarPanelView: View {
         }
     }
 
+    @ViewBuilder
     private func proxyRow(_ proxy: ProxyEntry, mode: ProxyMode) -> some View {
+        if proxy.isFreeUsageLimited() {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                proxyRowContent(proxy, mode: mode, now: timeline.date)
+            }
+        } else {
+            proxyRowContent(proxy, mode: mode, now: Date())
+        }
+    }
+
+    private func proxyRowContent(_ proxy: ProxyEntry, mode: ProxyMode, now: Date) -> some View {
         HStack(spacing: 8) {
-            ProxyHealthIcon(proxy: proxy)
+            ProxyHealthIcon(proxy: proxy, now: now)
             Text(proxy.label)
                 .font(.body)
                 .foregroundStyle(proxy.enabled ? .primary : .secondary)
@@ -198,22 +209,30 @@ struct MenuBarPanelView: View {
                 proxy: proxy,
                 mode: mode,
                 isTesting: model.isTesting,
+                probeStatus: model.freeUsageProbeStatuses[proxy.id],
+                now: now,
                 showsAge: true,
                 font: .caption
             )
         }
         .frame(height: 22)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rowAccessibilityLabel(proxy, mode: mode))
-        .help(ProxyStatus.detail(for: proxy))
+        .accessibilityLabel(rowAccessibilityLabel(proxy, mode: mode, now: now))
+        .help(ProxyStatus.detail(for: proxy, now: now))
     }
 
-    private func rowAccessibilityLabel(_ proxy: ProxyEntry, mode: ProxyMode) -> String {
-        var parts = [proxy.label, ProxyStatus.text(for: proxy, mode: mode, isTesting: model.isTesting)]
+    private func rowAccessibilityLabel(_ proxy: ProxyEntry, mode: ProxyMode, now: Date) -> String {
+        var parts = [proxy.label, ProxyStatus.text(
+            for: proxy,
+            mode: mode,
+            isTesting: model.isTesting && model.freeUsageProbeStatuses[proxy.id] == nil,
+            probeStatus: model.freeUsageProbeStatuses[proxy.id],
+            now: now
+        )]
         if proxy.enabled, let health = proxy.health, !health.ok, let error = health.error {
             parts.append(error)
         }
-        if let age = ProxyStatus.checkedAgo(for: proxy) {
+        if let age = ProxyStatus.checkedAgo(for: proxy, now: now) {
             parts.append("checked \(age)")
         }
         return parts.joined(separator: ", ")

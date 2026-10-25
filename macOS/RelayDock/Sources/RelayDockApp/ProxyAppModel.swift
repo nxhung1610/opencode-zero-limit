@@ -23,11 +23,22 @@ enum ProxyAppTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct FreeUsageProbeJob: Sendable {
+    var entry: ProxyEntry
+    var proxyURL: String
+}
+
+private struct FreeUsageProbeCompletion: Sendable {
+    var entry: ProxyEntry
+    var outcome: OpenCodeFreeUsageProbe.Outcome
+}
+
 @MainActor
 final class ProxyAppModel: ObservableObject {
     @Published private(set) var state: ProxyState?
     @Published private(set) var loadError: String?
     @Published private(set) var isTesting = false
+    @Published private(set) var freeUsageProbeStatuses: [String: FreeUsageProbeStatus] = [:]
     @Published var isManualChooserPresented = false
     @Published private(set) var errorMessage: String?
     /// A calm note about what the last Test All skipped — a script entry with
@@ -36,7 +47,10 @@ final class ProxyAppModel: ObservableObject {
     @Published private(set) var checkNotice: String?
     @Published var selectedTab: ProxyAppTab = .routing
     /// The RelayDock Edge panel, refreshed by `pollEdgeStatusWhileVisible()`.
-    @Published private(set) var edgePanel: EdgePanelState = .unknown
+    /// It lives in its own observable so polling only redraws the rows that show
+    /// it; `edgePanel` stays as a read-only view of the current value.
+    let edgeStatus = EdgePanelModel()
+    var edgePanel: EdgePanelState { edgeStatus.panel }
     /// Which checker the last Test All used — the pool view says so out loud
     /// when Edge is unreachable and the check fell back in-process.
     @Published private(set) var lastCheckRoute: CheckRoute?
@@ -52,6 +66,8 @@ final class ProxyAppModel: ObservableObject {
     private let edgeStatusProvider: @Sendable (EdgeConfigFile) async -> EdgeStatusResponse?
     private let edgeCheckRunner: @Sendable (EdgeConfigFile) async -> EdgeCheckResponse?
     private let routingProbe: @Sendable (EdgeConfigFile?) async -> OpenCodeRoutingSnapshot
+    private let freeModelProvider: @Sendable () async -> String?
+    private let freeUsageProbe: @Sendable (ProxyEntry, String, EdgeConfigFile, String) async -> OpenCodeFreeUsageProbe.Outcome
     private var routingProbeTask: Task<OpenCodeRoutingSnapshot, Never>?
     private var modeChangeID = UUID()
     private var modeChangeSource: RoutingChangeSource?
@@ -68,6 +84,12 @@ final class ProxyAppModel: ObservableObject {
         },
         routingProbe: @escaping @Sendable (EdgeConfigFile?) async -> OpenCodeRoutingSnapshot = { config in
             await OpenCodeRoutingProbe.inspect(edgeConfig: config)
+        },
+        freeModelProvider: @escaping @Sendable () async -> String? = {
+            await OpenCodeFreeUsageProbe.findFreeModel()
+        },
+        freeUsageProbe: @escaping @Sendable (ProxyEntry, String, EdgeConfigFile, String) async -> OpenCodeFreeUsageProbe.Outcome = { entry, proxyURL, config, model in
+            await OpenCodeFreeUsageProbe.run(entry: entry, proxyURL: proxyURL, edgeConfig: config, model: model)
         }
     ) {
         self.store = store
@@ -76,6 +98,8 @@ final class ProxyAppModel: ObservableObject {
         self.edgeStatusProvider = edgeStatusProvider
         self.edgeCheckRunner = edgeCheckRunner
         self.routingProbe = routingProbe
+        self.freeModelProvider = freeModelProvider
+        self.freeUsageProbe = freeUsageProbe
     }
 
     var enabledCount: Int { state?.enabledProxies.count ?? 0 }
@@ -91,8 +115,9 @@ final class ProxyAppModel: ObservableObject {
     }
 
     func load() {
+        freeUsageProbeStatuses = [:]
         do {
-            state = try store.load()
+            state = try store.loadWithFreeUsageLimits()
             loadError = nil
         } catch {
             state = nil
@@ -206,7 +231,12 @@ final class ProxyAppModel: ObservableObject {
         let task = Task { await probe(config) }
         routingProbeTask = task
         let report = await task.value
-        openCodeRouting = report
+        // Every probe stamps a fresh `checkedAt`; only a changed routing picture
+        // should redraw the window.
+        if report.servers != openCodeRouting?.servers
+            || report.inspectionIncomplete != openCodeRouting?.inspectionIncomplete {
+            openCodeRouting = report
+        }
         routingProbeTask = nil
         return report
     }
@@ -219,6 +249,7 @@ final class ProxyAppModel: ObservableObject {
     func setEnabled(_ id: String, enabled: Bool) {
         do {
             state = try store.setEnabled(id, enabled: enabled)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -238,6 +269,7 @@ final class ProxyAppModel: ObservableObject {
     func removeProxy(_ id: String) {
         do {
             state = try store.remove(id)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -248,6 +280,7 @@ final class ProxyAppModel: ObservableObject {
     func importProxies(_ text: String) -> String? {
         do {
             state = try store.importProxies(text)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
             return nil
         } catch {
@@ -259,6 +292,7 @@ final class ProxyAppModel: ObservableObject {
     func addProxyURL(_ input: String) -> String? {
         do {
             state = try store.addProxyURL(input)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
             return nil
         } catch {
@@ -270,6 +304,7 @@ final class ProxyAppModel: ObservableObject {
     func addProxyScript(name: String, script: String) -> String? {
         do {
             state = try store.addProxyScript(name: name, script: script)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
             return nil
         } catch {
@@ -281,6 +316,7 @@ final class ProxyAppModel: ObservableObject {
     func updateProxyScript(id: String, name: String, script: String) -> String? {
         do {
             state = try store.updateProxyScript(id: id, name: name, script: script)
+            freeUsageProbeStatuses = [:]
             errorMessage = nil
             return nil
         } catch {
@@ -291,17 +327,154 @@ final class ProxyAppModel: ObservableObject {
     func testAll() async {
         guard !isTesting, state != nil else { return }
         isTesting = true
+        freeUsageProbeStatuses = [:]
         defer { isTesting = false }
+        var quotaProbe: (config: EdgeConfigFile, healthyEntryIDs: Set<String>)?
         // Edge owns the script cache and the checks that feed it: delegate so
         // the provider sees one checker. When Edge does not answer — not
         // installed, not running — fall back to the in-process path and let
         // the pool view say so.
-        if let config = loadEdgeConfig(), let response = await edgeCheckRunner(config) {
+        let edgeConfig = loadEdgeConfig()
+        if let edgeConfig, let response = await edgeCheckRunner(edgeConfig) {
             await applyEdgeCheckResults(response)
+            refreshProxyStateFromDisk()
+            let healthyIDs = Set(response.results.compactMap { entryID, result in
+                result.ok && !result.deferred ? entryID : nil
+            })
+            quotaProbe = (edgeConfig, healthyIDs)
+        } else {
+            lastCheckRoute = .inApp
+            await runInAppChecks()
+            refreshProxyStateFromDisk()
+            if (state?.proxies ?? []).contains(where: {
+                $0.enabled && $0.hasValidDefinition && $0.health?.ok == true && !$0.isFreeUsageLimited()
+            }) {
+                let reason = edgeConfig == nil ? "RelayDock Edge is not configured" : "RelayDock Edge is not responding"
+                appendCheckNotice("OpenCode free-limit probe skipped: \(reason); only proxy connectivity was checked.")
+            }
+        }
+        if let quotaProbe {
+            await runOpenCodeFreeUsageProbes(edgeConfig: quotaProbe.config, healthyEntryIDs: quotaProbe.healthyEntryIDs)
+        }
+    }
+
+    /// Test All first checks proxy connectivity, then sends one small OpenCode
+    /// request through an isolated Edge containing only each healthy entry.
+    private func runOpenCodeFreeUsageProbes(edgeConfig: EdgeConfigFile, healthyEntryIDs: Set<String>) async {
+        let candidates = (state?.proxies ?? []).filter {
+            healthyEntryIDs.contains($0.id)
+                && $0.enabled && $0.hasValidDefinition && $0.health?.ok == true && !$0.isFreeUsageLimited()
+        }
+        guard !candidates.isEmpty else { return }
+        freeUsageProbeStatuses = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, .checking) })
+
+        guard let model = await freeModelProvider() else {
+            for entry in candidates { freeUsageProbeStatuses[entry.id] = .skipped }
+            appendCheckNotice("OpenCode free-limit probe skipped: no available OpenCode free model was found.")
             return
         }
-        lastCheckRoute = .inApp
-        await runInAppChecks()
+
+        let scriptCacheURL = store.fileURL.deletingLastPathComponent().appending(path: ScriptCacheFile.fileName)
+        if let current = state {
+            importProxyScriptCacheSnapshots(ScriptCacheFile.load(from: scriptCacheURL).snapshots(matching: current))
+        }
+
+        var jobs: [FreeUsageProbeJob] = []
+        for entry in candidates {
+            guard let proxyURL = openCodeProbeProxyURL(for: entry) else {
+                freeUsageProbeStatuses[entry.id] = .skipped
+                continue
+            }
+            jobs.append(FreeUsageProbeJob(entry: entry, proxyURL: proxyURL))
+        }
+
+        // A small concurrency cap keeps several temporary Edge daemons and
+        // OpenCode processes from overwhelming the host while still allowing
+        // independent proxies to finish and update their rows in parallel.
+        let maxConcurrentProbes = 3
+        let probe = freeUsageProbe
+        await withTaskGroup(of: FreeUsageProbeCompletion.self) { group in
+            var nextIndex = 0
+            for _ in 0..<min(maxConcurrentProbes, jobs.count) {
+                let job = jobs[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    let outcome = await probe(job.entry, job.proxyURL, edgeConfig, model)
+                    return FreeUsageProbeCompletion(entry: job.entry, outcome: outcome)
+                }
+            }
+
+            while let completion = await group.next() {
+                recordFreeUsageProbeOutcome(completion.outcome, for: completion.entry)
+                if nextIndex < jobs.count {
+                    let job = jobs[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        let outcome = await probe(job.entry, job.proxyURL, edgeConfig, model)
+                        return FreeUsageProbeCompletion(entry: job.entry, outcome: outcome)
+                    }
+                }
+            }
+        }
+
+        // Each completed probe publishes its row result immediately; reload
+        // once more after the group drains to catch any final sidecar changes.
+        refreshProxyStateFromDisk()
+        let limitedIDs = Set(candidates.compactMap { entry in
+            state?.proxies.first(where: { $0.id == entry.id })?.isFreeUsageLimited() == true ? entry.id : nil
+        })
+        let failures = candidates.filter { freeUsageProbeStatuses[$0.id] == .failed }.count
+        let skipped = candidates.filter { freeUsageProbeStatuses[$0.id] == .skipped }.count
+        let limited = limitedIDs.count
+        var messages: [String] = []
+        if limited > 0 {
+            messages.append("OpenCode FreeUsageLimitError: paused \(limited) proxy \(limited == 1 ? "until reset" : "proxies until reset").")
+        }
+        if failures > 0 {
+            messages.append("OpenCode quota probe failed for \(failures) healthy proxy \(failures == 1 ? "entry" : "entries").")
+        }
+        if skipped > 0 {
+            messages.append("OpenCode quota probe skipped for \(skipped) healthy custom \(skipped == 1 ? "entry" : "entries") without a cached proxy URL.")
+        }
+        if jobs.isEmpty && skipped == 0 {
+            messages.append("OpenCode quota probe could not find a healthy proxy to test.")
+        }
+        if !messages.isEmpty { appendCheckNotice(messages.joined(separator: " ")) }
+    }
+
+    private func recordFreeUsageProbeOutcome(_ outcome: OpenCodeFreeUsageProbe.Outcome, for entry: ProxyEntry) {
+        switch outcome {
+        case .passed:
+            freeUsageProbeStatuses[entry.id] = .passed
+        case .failed, .timedOut:
+            freeUsageProbeStatuses[entry.id] = .failed
+        case .freeUsageLimited(let retryAfterMs):
+            let deadline = Date().timeIntervalSince1970 + retryAfterMs / 1_000
+            do {
+                try FreeUsageLimitStore(configDirectory: store.fileURL.deletingLastPathComponent())
+                    .flag(entry.id, until: deadline)
+                freeUsageProbeStatuses.removeValue(forKey: entry.id)
+                refreshProxyStateFromDisk()
+            } catch {
+                freeUsageProbeStatuses[entry.id] = .failed
+            }
+        }
+    }
+
+    private func openCodeProbeProxyURL(for entry: ProxyEntry) -> String? {
+        if entry.script != nil {
+            guard let cachedURL = proxyScriptCachedURL(for: entry.id) else { return nil }
+            return parseProxyImportLine(cachedURL)
+        }
+        return parseProxyImportLine(entry.url)
+    }
+
+    private func appendCheckNotice(_ message: String) {
+        if let existing = checkNotice, !existing.isEmpty {
+            checkNotice = existing + " " + message
+        } else {
+            checkNotice = message
+        }
     }
 
     private func applyEdgeCheckResults(_ response: EdgeCheckResponse) async {
@@ -388,21 +561,24 @@ final class ProxyAppModel: ObservableObject {
     /// Refreshes the panel: a missing `edge.json` reads as not configured and
     /// an unanswered poll as not running — never as an error.
     func refreshEdgeStatus() async {
-        guard let config = loadEdgeConfig() else {
-            edgePanel = .notConfigured
-            return
-        }
-        if let status = await edgeStatusProvider(config) {
-            edgePanel = .running(status)
+        let next: EdgePanelState
+        if let config = loadEdgeConfig() {
+            next = if let status = await edgeStatusProvider(config) {
+                .running(status)
+            } else {
+                .notRunning
+            }
         } else {
-            edgePanel = .notRunning
+            next = .notConfigured
         }
+        edgeStatus.apply(next)
     }
 
     /// Polls the daemon while a surface is visible; views drive this from
     /// `.task`, so closing the window or the menu bar popover cancels it.
     func pollEdgeStatusWhileVisible() async {
         while !Task.isCancelled {
+            refreshProxyStateFromDisk()
             await refreshEdgeStatus()
             if state?.mode != .off { await refreshOpenCodeRouting() }
             do {
@@ -413,39 +589,21 @@ final class ProxyAppModel: ObservableObject {
         }
     }
 
+    /// Edge records free-tier cooldowns in its sidecar while OpenCode is
+    /// running. Refresh the visible pool from disk so the flag appears without
+    /// requiring the user to close and reopen RelayDock.
+    func refreshProxyStateFromDisk() {
+        guard let latest = try? store.loadWithFreeUsageLimits(), latest != state else { return }
+        state = latest
+    }
+
     /// Recent tunnels grouped by client process — the panel's "who used Edge"
     /// list. Processes with active tunnels sort first, then by last activity.
-    var edgeAttribution: [EdgeAttribution] {
-        guard case .running(let status) = edgePanel else { return [] }
-        var byKey: [String: EdgeAttribution] = [:]
-        for tunnel in status.tunnels {
-            let key = tunnel.peerPid.map(String.init) ?? "unknown"
-            var summary = byKey[key] ?? EdgeAttribution(
-                id: key,
-                name: tunnel.peerName ?? "Unknown process",
-                pid: tunnel.peerPid,
-                tunnels: 0,
-                activeTunnels: 0,
-                bytesDown: 0,
-                lastActivity: tunnel.startedAt
-            )
-            summary.tunnels += 1
-            if tunnel.active { summary.activeTunnels += 1 }
-            summary.bytesDown += tunnel.bytesDown
-            summary.lastActivity = max(summary.lastActivity, tunnel.endedAt ?? tunnel.startedAt)
-            byKey[key] = summary
-        }
-        return byKey.values.sorted { lhs, rhs in
-            if (lhs.activeTunnels > 0) != (rhs.activeTunnels > 0) {
-                return lhs.activeTunnels > 0
-            }
-            return lhs.lastActivity > rhs.lastActivity
-        }
-    }
+    var edgeAttribution: [EdgeAttribution] { edgeStatus.edgeAttribution }
 
     /// Seeds the panel without touching the network (fixtures and tests).
     func applyEdgePanelForFixtures(_ panel: EdgePanelState) {
-        edgePanel = panel
+        edgeStatus.apply(panel)
     }
 
     func clearError() {

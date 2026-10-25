@@ -5,10 +5,18 @@ import SwiftUI
 /// the right. Navigation lives in the sidebar; actions live in the toolbar.
 struct RootView: View {
     @ObservedObject var model: ProxyAppModel
+    /// The updater is its own observable; the model does not republish on it.
+    @ObservedObject private var updates: UpdateModel
     /// Fixtures open the advanced disclosure without a click.
     var showsAdvanced = false
 
     @State private var isImportPresented = false
+
+    init(model: ProxyAppModel, showsAdvanced: Bool = false) {
+        _model = ObservedObject(wrappedValue: model)
+        _updates = ObservedObject(wrappedValue: model.updates)
+        self.showsAdvanced = showsAdvanced
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -65,7 +73,7 @@ struct RootView: View {
             .listStyle(.sidebar)
 
             Divider()
-            sidebarFooter
+            SidebarFooter(edgeStatus: model.edgeStatus, updates: updates)
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
     }
@@ -78,8 +86,16 @@ struct RootView: View {
             }
         )
     }
+}
 
-    private var sidebarFooter: some View {
+/// The sidebar's Edge and version line. It observes Edge status directly so a
+/// poll redraws this footer instead of the whole window — including the split
+/// view that is mid-animation whenever the sidebar is expanding or collapsing.
+private struct SidebarFooter: View {
+    @ObservedObject var edgeStatus: EdgePanelModel
+    @ObservedObject var updates: UpdateModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: edgeSymbol)
@@ -93,7 +109,7 @@ struct RootView: View {
             }
             .help(edgeHelp)
 
-            Text(model.updates.versionDisplayText)
+            Text(updates.versionDisplayText)
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
@@ -104,7 +120,7 @@ struct RootView: View {
     }
 
     private var edgeSymbol: String {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .running: "bolt.horizontal.circle"
         case .notRunning: "bolt.slash"
         case .notConfigured: "questionmark.circle"
@@ -113,7 +129,7 @@ struct RootView: View {
     }
 
     private var edgeText: String {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .running(let status):
             "Edge · \(status.counters.tunnelsActive) active"
         case .notRunning:
@@ -126,7 +142,7 @@ struct RootView: View {
     }
 
     private var edgeHelp: String {
-        switch model.edgePanel {
+        switch edgeStatus.panel {
         case .running(let status):
             "RelayDock Edge is running with \(status.counters.tunnelsActive) active tunnels."
         case .notRunning:
@@ -137,6 +153,9 @@ struct RootView: View {
             "RelayDock Edge status is not known yet."
         }
     }
+}
+
+private extension RootView {
 
     // MARK: - Detail
 
@@ -185,7 +204,7 @@ struct RootView: View {
                     }
                     Spacer(minLength: 12)
                     UpdateFooterView(
-                        updates: model.updates,
+                        updates: updates,
                         showsWhenIdle: false,
                         showsVersion: false,
                         showsPhaseDescription: false
@@ -204,14 +223,14 @@ struct RootView: View {
     /// The window only surfaces updates that need attention; the quiet daily
     /// check and its "up to date" result stay out of the way.
     private var updateBanner: UpdateBanner? {
-        switch model.updates.phase {
+        switch updates.phase {
         case .idle, .checking, .upToDate:
             nil
         case .available(let release):
             UpdateBanner(
                 symbol: "arrow.down.circle",
                 title: "Version \(release.version) is available",
-                detail: "You’re running \(model.updates.versionDisplayText)."
+                detail: "You’re running \(updates.versionDisplayText)."
             )
         case .downloading(let release):
             UpdateBanner(
