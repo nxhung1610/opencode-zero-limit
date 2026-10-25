@@ -161,6 +161,27 @@ final class EdgeSocket: @unchecked Sendable {
         }
     }
 
+    /// Closes only the write direction: the peer observes EOF while this
+    /// socket can still receive. The relay uses it to forward a client's
+    /// clean half-close through the tunnel instead of tearing the tunnel down
+    /// and losing the response that is still in flight.
+    func halfCloseWrite() {
+        switch backend {
+        case .network(let connection, _):
+            startIfNeeded()
+            connection.send(
+                content: nil,
+                // Only a final context makes Network.framework emit a TCP
+                // FIN; `.defaultMessage` marks a message, not a write-close.
+                contentContext: .finalMessage,
+                isComplete: true,
+                completion: .contentProcessed { _ in }
+            )
+        case .descriptor(let raw):
+            raw.shutdownWrite()
+        }
+    }
+
     static func describe(_ error: Error) -> String {
         guard let nwError = error as? NWError else { return error.localizedDescription }
         switch nwError {
@@ -335,6 +356,7 @@ final class RawDescriptor: @unchecked Sendable {
     let peerPort: UInt16?
     private let lock = NSLock()
     private var shutDown = false
+    private var writeShutDown = false
 
     init(fd: Int32, peerPort: UInt16?) {
         self.fd = fd
@@ -348,7 +370,23 @@ final class RawDescriptor: @unchecked Sendable {
         let first = !shutDown
         shutDown = true
         lock.unlock()
-        if first { Darwin.shutdown(fd, SHUT_RDWR) }
+        guard first else { return }
+        if Darwin.shutdown(fd, SHUT_RDWR) == 0 { return }
+        // macOS returns ENOTCONN from SHUT_RDWR once the peer has already
+        // half-closed, and then sends no FIN of its own — the peer would wait
+        // forever for EOF. SHUT_WR still delivers it.
+        if errno == ENOTCONN {
+            _ = Darwin.shutdown(fd, SHUT_WR)
+        }
+    }
+
+    /// `SHUT_WR` only: the peer gets a FIN, blocked reads here still work.
+    func shutdownWrite() {
+        lock.lock()
+        let first = !writeShutDown && !shutDown
+        writeShutDown = true
+        lock.unlock()
+        if first { Darwin.shutdown(fd, SHUT_WR) }
     }
 
     deinit { Darwin.close(fd) }

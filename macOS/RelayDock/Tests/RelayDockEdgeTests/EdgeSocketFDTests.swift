@@ -55,4 +55,29 @@ struct EdgeSocketFDTests {
         #expect(data.isEmpty)
         #expect(complete)
     }
+
+    /// A client EOF must be forwardable without losing the return path: the
+    /// peer sees FIN while both sides keep their read direction.
+    @Test func halfCloseWriteEndsOnlyTheWriteDirection() async throws {
+        let (a, b) = try makePair()
+        defer {
+            a.cancel()
+            b.cancel()
+        }
+        try await a.send(Data("request".utf8))
+        a.halfCloseWrite()
+
+        let (first, firstComplete) = try await b.receiveSome()
+        #expect(String(decoding: first, as: UTF8.self) == "request")
+        #expect(!firstComplete)
+        let (tail, ended) = try await b.receiveSome()
+        #expect(tail.isEmpty)
+        #expect(ended)
+
+        // b's write direction is untouched, and a can still read it.
+        try await b.send(Data("response".utf8))
+        let (reply, replyComplete) = try await a.receiveSome()
+        #expect(String(decoding: reply, as: UTF8.self) == "response")
+        #expect(!replyComplete)
+    }
 }

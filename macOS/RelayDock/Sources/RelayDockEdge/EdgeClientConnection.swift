@@ -409,12 +409,18 @@ final class EdgeClientConnection: @unchecked Sendable {
 
     // MARK: - Relay
 
-    private func relay(
+    /// Pumps bytes until both directions end. A clean client EOF is forwarded
+    /// as a half-close so the in-flight response can still drain; the tunnel
+    /// is torn down immediately only for client errors. `halfCloseFirstByteTimeout`
+    /// bounds the wait for a response byte after that half-close, so a silent
+    /// upstream cannot leak the connection.
+    func relay(
         to tunnel: EdgeUpstreamTunnel,
         clientPrelude: Data,
         upstreamEntryID: String?,
         label: String?,
-        requestSent: Bool = false
+        requestSent: Bool = false,
+        halfCloseFirstByteTimeout: TimeInterval = EdgeRelayPolicy.stallThreshold
     ) async throws {
         await daemon.registerTunnel(
             clientPort: clientPort,
@@ -423,7 +429,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             label: label
         )
         let startedAt = Date().timeIntervalSince1970
-        let end = EdgeRelayEndHolder()
+        let state = EdgeRelayState()
         let counts = await withTaskGroup(
             of: (up: Int, down: Int).self,
             returning: (up: Int, down: Int).self
@@ -436,16 +442,17 @@ final class EdgeClientConnection: @unchecked Sendable {
                         try await tunnel.socket.send(clientPrelude)
                         up += clientPrelude.count
                     } catch {
-                        end.record(.upstreamDied)
+                        state.record(.upstreamDied)
                     }
                 }
-                if end.value == nil {
+                var forwardedHalfClose = false
+                if state.value == nil {
                     while true {
                         let step: (data: Data, isComplete: Bool)
                         do {
                             step = try await self.socket.receiveSome()
                         } catch {
-                            end.record(.clientClosed)
+                            state.record(.clientClosed)
                             break
                         }
                         if !step.data.isEmpty {
@@ -453,17 +460,30 @@ final class EdgeClientConnection: @unchecked Sendable {
                                 try await tunnel.socket.send(step.data)
                                 up += step.data.count
                             } catch {
-                                end.record(.upstreamDied)
+                                state.record(.upstreamDied)
                                 break
                             }
                         }
                         if step.isComplete {
-                            end.record(.clientClosed)
+                            // Clean EOF: the client is done sending but can
+                            // still receive. Forward the FIN and keep the
+                            // upstream open for the response. The end is
+                            // latched first, so a watchdog-induced cancel can
+                            // never be misread as a fresh upstream death.
+                            state.record(.clientClosed)
+                            forwardedHalfClose = true
+                            tunnel.socket.halfCloseWrite()
+                            state.armHalfCloseWatchdog(
+                                for: tunnel.socket,
+                                timeout: halfCloseFirstByteTimeout
+                            )
                             break
                         }
                     }
                 }
-                tunnel.socket.cancel()
+                if !forwardedHalfClose {
+                    tunnel.socket.cancel()
+                }
                 return (up, 0)
             }
             group.addTask {
@@ -473,34 +493,41 @@ final class EdgeClientConnection: @unchecked Sendable {
                     do {
                         try await self.socket.send(tunnel.initialData)
                         down += tunnel.initialData.count
+                        state.noteDownstreamBytes(tunnel.initialData.count)
                     } catch {
-                        end.record(.clientClosed)
+                        state.record(.clientClosed)
                     }
                 }
-                if end.value == nil {
+                if state.value == nil {
                     while true {
                         let step: (data: Data, isComplete: Bool)
                         do {
                             step = try await tunnel.socket.receiveSome()
                         } catch {
-                            end.record(.upstreamDied)
+                            state.record(.upstreamDied)
                             break
                         }
                         if !step.data.isEmpty {
+                            state.noteDownstreamBytes(step.data.count)
                             do {
                                 try await self.socket.send(step.data)
                                 down += step.data.count
                             } catch {
-                                end.record(.clientClosed)
+                                state.record(.clientClosed)
                                 break
                             }
                         }
                         if step.isComplete {
-                            end.record(.upstreamClosed)
+                            state.record(.upstreamClosed)
                             break
                         }
                     }
                 }
+                state.markUpstreamFinished()
+                // The upstream side is finished (EOF, failure, or a client
+                // write error); release it even when the half-close path
+                // skipped task A's cancel.
+                tunnel.socket.cancel()
                 self.socket.cancel()
                 return (0, down)
             }
@@ -515,7 +542,7 @@ final class EdgeClientConnection: @unchecked Sendable {
         guard let upstreamEntryID else { return }
         let duration = Date().timeIntervalSince1970 - startedAt
         switch EdgeRelayPolicy.verdict(
-            end: end.value ?? .clientClosed,
+            end: state.value ?? .clientClosed,
             requestSent: requestSent,
             bytesUp: counts.up,
             bytesDown: counts.down,
@@ -614,21 +641,74 @@ enum EdgeRelayPolicy {
     }
 }
 
-/// First-wins latch for the relay's end classification.
-private final class EdgeRelayEndHolder: @unchecked Sendable {
+/// Shared relay bookkeeping: the first-ender latch plus the state the
+/// client-half-close watchdog needs. The end is recorded before the watchdog
+/// can cancel anything, so a policy-induced cancel is never misread as a
+/// fresh upstream death.
+private final class EdgeRelayState: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored: EdgeRelayEnd?
+    private var storedEnd: EdgeRelayEnd?
+    private var upstreamFinished = false
+    private var downstreamBytes = 0
+    private var watchdog: Task<Void, Never>?
 
     func record(_ value: EdgeRelayEnd) {
         lock.lock()
-        if stored == nil { stored = value }
+        if storedEnd == nil { storedEnd = value }
         lock.unlock()
     }
 
     var value: EdgeRelayEnd? {
         lock.lock()
         defer { lock.unlock() }
-        return stored
+        return storedEnd
+    }
+
+    /// The first response byte ends the watchdog's job. It only exists to
+    /// distinguish "still working" from "open but silent".
+    func noteDownstreamBytes(_ count: Int) {
+        lock.lock()
+        downstreamBytes += count
+        let task = watchdog
+        watchdog = nil
+        lock.unlock()
+        task?.cancel()
+    }
+
+    /// After a client half-close, wait for the upstream's first response byte.
+    /// Once one arrives, the normal client/upstream lifetimes decide when the
+    /// relay ends, so an active download is never cut short; a silent tunnel
+    /// is cancelled instead of leaked.
+    func armHalfCloseWatchdog(for upstream: EdgeSocket, timeout: TimeInterval) {
+        lock.lock()
+        if upstreamFinished || downstreamBytes > 0 {
+            lock.unlock()
+            return
+        }
+        let task = Task { [weak self, upstream] in
+            do {
+                let seconds = timeout.isFinite ? max(timeout, 0.05) : EdgeRelayPolicy.stallThreshold
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            let abandoned = self.lock.withLock {
+                !self.upstreamFinished && self.downstreamBytes == 0
+            }
+            if abandoned { upstream.cancel() }
+        }
+        watchdog = task
+        lock.unlock()
+    }
+
+    func markUpstreamFinished() {
+        lock.lock()
+        upstreamFinished = true
+        let task = watchdog
+        watchdog = nil
+        lock.unlock()
+        task?.cancel()
     }
 }
 

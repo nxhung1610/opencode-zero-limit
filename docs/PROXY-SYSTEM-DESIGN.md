@@ -138,6 +138,11 @@ by Edge instead of at spawn time.
 - A tunnel that dies mid-stream or stalls (request bytes flowed, no response byte for 30 s, the
   client gives up) schedules a near-term re-check (≤30 s) through a fresh endpoint, so a zombie
   provider cannot hide behind an open-but-silent tunnel.
+- A client that half-closes its write side (`shutdown(SHUT_WR)`) does not tear the tunnel down:
+  Edge forwards the FIN upstream and keeps pumping the response, so a half-closing client still
+  receives the full body. If no response byte arrives within the same 30 s stall window, the
+  half-closed tunnel is cancelled instead of leaked; once a byte arrives, normal client/upstream
+  lifetimes apply and an active download is never cut short.
 - The app’s `Test All` delegates to `GET /__relaydock/check?scope=all` whenever `edge.json` exists
   and Edge answers; skipped (deferred) results are surfaced as a plain message, not recorded. The
   app falls back to its in-process path only when Edge is not configured or unreachable (degraded
