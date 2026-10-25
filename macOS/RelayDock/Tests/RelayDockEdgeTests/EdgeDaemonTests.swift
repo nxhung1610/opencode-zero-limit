@@ -4,48 +4,294 @@ import Testing
 @testable import RelayDockEdge
 
 struct EdgeDaemonTests {
+    private func tunnelRecord(
+        pid: Int32?,
+        port: UInt16 = 57_211,
+        entryID: String? = "px_a",
+        startedAt: Double,
+        endedAt: Double? = nil,
+        active: Bool,
+        lastDownstreamAt: Double? = nil,
+        clientPort: UInt16 = 40_000
+    ) -> EdgeDaemon.TunnelRecord {
+        EdgeDaemon.TunnelRecord(
+            clientPort: clientPort,
+            edgePort: port,
+            entryID: entryID,
+            label: entryID,
+            peerPid: pid,
+            peerName: "opencode",
+            startedAt: startedAt,
+            endedAt: endedAt,
+            bytesUp: 0,
+            bytesDown: 0,
+            active: active,
+            lastDownstreamAt: lastDownstreamAt
+        )
+    }
+
     @Test func freeUsageLimitReportUsesFreshSameProcessTunnelAndEdgePort() {
         let now = 2_000.0
-        func tunnel(
-            pid: Int32?,
-            port: UInt16 = 57_211,
-            entryID: String? = "px_a",
-            startedAt: Double,
-            endedAt: Double? = nil,
-            active: Bool
-        ) -> EdgeDaemon.TunnelRecord {
-            EdgeDaemon.TunnelRecord(
-                clientPort: 40_000,
-                edgePort: port,
-                entryID: entryID,
-                label: entryID,
-                peerPid: pid,
-                peerName: "opencode",
-                startedAt: startedAt,
-                endedAt: endedAt,
-                bytesUp: 0,
-                bytesDown: 0,
-                active: active
-            )
-        }
-        let match = EdgeDaemon.matchingTunnel(
+        let result = EdgeDaemon.matchingTunnel(
             peerPID: 123,
             edgePort: 57_211,
-            active: [tunnel(pid: 123, startedAt: now - 5, active: true)],
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    startedAt: now - 5,
+                    active: true,
+                    lastDownstreamAt: now - 1
+                ),
+            ],
             recent: [
-                tunnel(pid: 123, startedAt: now - 10, endedAt: now - 1, active: false),
-                tunnel(pid: 999, startedAt: now - 1, endedAt: now - 1, active: false),
-                tunnel(pid: 123, port: 57_212, startedAt: now, endedAt: now, active: false),
-                tunnel(pid: 123, startedAt: now - 200, endedAt: now - 121, active: false),
+                tunnelRecord(
+                    pid: 123,
+                    startedAt: now - 10,
+                    endedAt: now - 1,
+                    active: false,
+                    lastDownstreamAt: now - 2,
+                    clientPort: 40_001
+                ),
+                tunnelRecord(pid: 999, startedAt: now - 1, endedAt: now - 1, active: false),
+                tunnelRecord(
+                    pid: 123,
+                    port: 57_212,
+                    startedAt: now,
+                    endedAt: now,
+                    active: false
+                ),
+                tunnelRecord(
+                    pid: 123,
+                    startedAt: now - 200,
+                    endedAt: now - 121,
+                    active: false,
+                    lastDownstreamAt: now - 200
+                ),
             ],
             now: now
         )
 
-        #expect(match?.entryID == "px_a")
-        #expect(match?.startedAt == now - 5)
+        guard case .matched(let match) = result else {
+            Issue.record("expected a matched tunnel")
+            return
+        }
+        #expect(match.entryID == "px_a")
+        #expect(match.startedAt == now - 5)
         #expect(EdgeDaemon.validFreeUsageCooldown(34_033_000))
         #expect(!EdgeDaemon.validFreeUsageCooldown(999))
         #expect(!EdgeDaemon.validFreeUsageCooldown(604_800_001))
+    }
+
+    @Test func freeUsageLimitReportPrefersLatestResponseOverNewestTunnel() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 100,
+                    active: true,
+                    lastDownstreamAt: now - 0.5,
+                    clientPort: 40_001
+                ),
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_b",
+                    startedAt: now - 5,
+                    active: true,
+                    lastDownstreamAt: now - 5,
+                    clientPort: 40_002
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+
+        guard case .matched(let match) = result else {
+            Issue.record("the tunnel with the latest response must win over the newest tunnel")
+            return
+        }
+        #expect(match.entryID == "px_a")
+    }
+
+    @Test func freeUsageLimitReportRefusesCloseActivityFromDifferentEntries() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 20,
+                    active: true,
+                    lastDownstreamAt: now - 0.2,
+                    clientPort: 40_001
+                ),
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_b",
+                    startedAt: now - 10,
+                    active: true,
+                    lastDownstreamAt: now - 0.8,
+                    clientPort: 40_002
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+
+        guard case .ambiguous(let entryIDs) = result else {
+            Issue.record("two different entries with near-identical activity must be ambiguous")
+            return
+        }
+        #expect(entryIDs == ["px_a", "px_b"])
+    }
+
+    @Test func freeUsageLimitReportAllowsCloseActivityWithinOneEntry() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 20,
+                    active: true,
+                    lastDownstreamAt: now - 0.2,
+                    clientPort: 40_001
+                ),
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 10,
+                    active: true,
+                    lastDownstreamAt: now - 0.5,
+                    clientPort: 40_002
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+
+        guard case .matched(let match) = result else {
+            Issue.record("two tunnels through the same entry are not ambiguous")
+            return
+        }
+        #expect(match.entryID == "px_a")
+    }
+
+    @Test func freeUsageLimitReportIgnoresTunnelsWithoutResponseBytes() {
+        let now = 1_000.0
+        let withActivity = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 20,
+                    active: true,
+                    lastDownstreamAt: now - 10,
+                    clientPort: 40_001
+                ),
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_b",
+                    startedAt: now - 1,
+                    active: true,
+                    clientPort: 40_002
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+        let withoutActivity = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 20,
+                    active: true,
+                    clientPort: 40_001
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+
+        guard case .matched(let match) = withActivity else {
+            Issue.record("a tunnel that never received bytes cannot be the 429 source")
+            return
+        }
+        #expect(match.entryID == "px_a")
+        guard case .none = withoutActivity else {
+            Issue.record("no response bytes means no attribution")
+            return
+        }
+    }
+
+    @Test func freeUsageLimitReportIgnoresStaleActivity() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    startedAt: now - 200,
+                    active: true,
+                    lastDownstreamAt: now - 121
+                ),
+            ],
+            recent: [],
+            now: now
+        )
+
+        guard case .none = result else {
+            Issue.record("activity older than the attribution window must not match")
+            return
+        }
+    }
+
+    @Test func freeUsageLimitReportPrefersRecentlyEndedResponseOverIdleActiveTunnel() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_b",
+                    startedAt: now - 0.2,
+                    active: true,
+                    clientPort: 40_002
+                ),
+            ],
+            recent: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 30,
+                    endedAt: now - 0.5,
+                    active: false,
+                    lastDownstreamAt: now - 0.5,
+                    clientPort: 40_001
+                ),
+            ],
+            now: now
+        )
+
+        guard case .matched(let match) = result else {
+            Issue.record("the recently ended tunnel delivered the response")
+            return
+        }
+        #expect(match.entryID == "px_a")
     }
 
     @Test func freeUsageLimitCooldownPersistsAndAutoSkipsThatProxy() async throws {
@@ -92,6 +338,132 @@ struct EdgeDaemonTests {
             return
         }
         #expect(retryAt == now + 3_600)
+    }
+
+    @Test func freeUsageLimitReportPersistsOnlyTheTunnelWithTheLatestResponse() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-attribution-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            peerResolver: { _, _ in EdgePeerInfo(pid: 123, name: "opencode") }
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_001,
+            edgePort: 57_999,
+            entryID: imported.proxies[0].id,
+            label: "first"
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_002,
+            edgePort: 57_999,
+            entryID: imported.proxies[1].id,
+            label: "second"
+        )
+        let now = Date().timeIntervalSince1970
+        await daemon.noteTunnelActivity(clientPort: 40_001, at: now - 1)
+        await daemon.noteTunnelActivity(clientPort: 40_002, at: now - 10)
+
+        let result = await daemon.reportFreeUsageLimit(
+            retryAfterMs: 3_600_000,
+            reportClientPort: 40_003,
+            edgePort: 57_999,
+            now: now
+        )
+
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
+        let refreshed = try store.loadWithFreeUsageLimits(now: now)
+        #expect(refreshed.proxies[0].isFreeUsageLimited(at: now))
+        #expect(!refreshed.proxies[1].isFreeUsageLimited(at: now))
+    }
+
+    @Test func ambiguousFreeUsageReportDoesNotPersistACooldown() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-ambiguous-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            peerResolver: { _, _ in EdgePeerInfo(pid: 123, name: "opencode") }
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_001,
+            edgePort: 57_999,
+            entryID: imported.proxies[0].id,
+            label: "first"
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_002,
+            edgePort: 57_999,
+            entryID: imported.proxies[1].id,
+            label: "second"
+        )
+        let now = Date().timeIntervalSince1970
+        await daemon.noteTunnelActivity(clientPort: 40_001, at: now - 0.2)
+        await daemon.noteTunnelActivity(clientPort: 40_002, at: now - 0.8)
+
+        let result = await daemon.reportFreeUsageLimit(
+            retryAfterMs: 3_600_000,
+            reportClientPort: 40_003,
+            edgePort: 57_999,
+            now: now
+        )
+
+        #expect(result == .unmatched)
+        let refreshed = try store.loadWithFreeUsageLimits(now: now)
+        #expect(refreshed.proxies.allSatisfy { !$0.isFreeUsageLimited(at: now) })
+    }
+
+    @Test func finishedTunnelKeepsItsLastResponseTimeForAttribution() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-finished-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            peerResolver: { _, _ in EdgePeerInfo(pid: 123, name: "opencode") }
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_001,
+            edgePort: 57_999,
+            entryID: imported.proxies[0].id,
+            label: "first"
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_002,
+            edgePort: 57_999,
+            entryID: imported.proxies[1].id,
+            label: "second"
+        )
+        let activity = Date().timeIntervalSince1970
+        await daemon.noteTunnelActivity(clientPort: 40_001, at: activity)
+        await daemon.finishTunnel(clientPort: 40_001, bytesUp: 10, bytesDown: 500)
+        let now = Date().timeIntervalSince1970
+
+        let result = await daemon.reportFreeUsageLimit(
+            retryAfterMs: 3_600_000,
+            reportClientPort: 40_003,
+            edgePort: 57_999,
+            now: now
+        )
+
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
     }
 
     @Test func explicitFreeUsageReportsOnlyAcceptAnOpenCodeReporter() {

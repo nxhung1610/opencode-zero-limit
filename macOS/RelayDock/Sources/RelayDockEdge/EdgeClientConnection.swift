@@ -489,11 +489,19 @@ final class EdgeClientConnection: @unchecked Sendable {
             group.addTask {
                 // Upstream -> client.
                 var down = 0
+                var lastDownstreamAt: Double?
+                var lastNotedAt: Double = 0
                 if !tunnel.initialData.isEmpty {
                     do {
                         try await self.socket.send(tunnel.initialData)
                         down += tunnel.initialData.count
                         state.noteDownstreamBytes(tunnel.initialData.count)
+                        let deliveredAt = Date().timeIntervalSince1970
+                        lastDownstreamAt = deliveredAt
+                        if lastNotedAt == 0 || deliveredAt - lastNotedAt >= 0.5 {
+                            lastNotedAt = deliveredAt
+                            await self.daemon.noteTunnelActivity(clientPort: self.clientPort, at: deliveredAt)
+                        }
                     } catch {
                         state.record(.clientClosed)
                     }
@@ -512,6 +520,15 @@ final class EdgeClientConnection: @unchecked Sendable {
                             do {
                                 try await self.socket.send(step.data)
                                 down += step.data.count
+                                let deliveredAt = Date().timeIntervalSince1970
+                                lastDownstreamAt = deliveredAt
+                                if lastNotedAt == 0 || deliveredAt - lastNotedAt >= 0.5 {
+                                    lastNotedAt = deliveredAt
+                                    await self.daemon.noteTunnelActivity(
+                                        clientPort: self.clientPort,
+                                        at: deliveredAt
+                                    )
+                                }
                             } catch {
                                 state.record(.clientClosed)
                                 break
@@ -522,6 +539,14 @@ final class EdgeClientConnection: @unchecked Sendable {
                             break
                         }
                     }
+                }
+                // Record the exact final byte time before finishing the
+                // tunnel; the throttled notes above can be up to 500ms stale.
+                if let lastDownstreamAt {
+                    await self.daemon.noteTunnelActivity(
+                        clientPort: self.clientPort,
+                        at: lastDownstreamAt
+                    )
                 }
                 state.markUpstreamFinished()
                 // The upstream side is finished (EOF, failure, or a client

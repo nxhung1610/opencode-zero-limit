@@ -70,6 +70,15 @@ enum EdgeTunnelFailure: Equatable, Sendable {
 /// decisions; the operations that can block for seconds (script runs, health
 /// checks) hop to detached tasks so no connection ever waits behind them.
 actor EdgeDaemon {
+    /// The outcome of matching a free-usage report to a live or recently
+    /// closed tunnel. Ambiguity is a first-class result: pausing the wrong
+    /// proxy is worse than declining to pause one.
+    enum TunnelMatch: Sendable {
+        case matched(TunnelRecord)
+        case ambiguous(entryIDs: [String])
+        case none
+    }
+
     struct TunnelRecord: Sendable {
         var clientPort: UInt16
         var edgePort: UInt16
@@ -82,6 +91,10 @@ actor EdgeDaemon {
         var bytesUp: Int
         var bytesDown: Int
         var active: Bool
+        /// Timestamp of the last upstream -> client byte that was successfully
+        /// delivered. A free-usage report can only have come from a tunnel
+        /// that actually received a response body.
+        var lastDownstreamAt: Double? = nil
     }
 
     private struct ResolveOutcome: Sendable {
@@ -114,6 +127,10 @@ actor EdgeDaemon {
     let log: EdgeLog
     private let directory: URL
     private let attribution = EdgeAttribution()
+    /// Test seam for peer attribution. Production uses `attribution`; tests
+    /// inject a fixed OpenCode peer so the full report path can be exercised
+    /// without a live libproc socket scan.
+    private let peerResolver: (@Sendable (UInt16, UInt16) -> EdgePeerInfo?)?
     private let launchedAt = Date().timeIntervalSince1970
 
     private var cachedState: ProxyState?
@@ -173,12 +190,14 @@ actor EdgeDaemon {
         config: EdgeConfigFile,
         directory: URL,
         log: EdgeLog,
-        listenerReport: EdgeListenerReport? = nil
+        listenerReport: EdgeListenerReport? = nil,
+        peerResolver: (@Sendable (UInt16, UInt16) -> EdgePeerInfo?)? = nil
     ) {
         self.config = config
         self.directory = directory
         self.log = log
         self.listenerReport = listenerReport
+        self.peerResolver = peerResolver
     }
 
     // MARK: - State file
@@ -638,9 +657,11 @@ actor EdgeDaemon {
         )
     }
 
-    /// The loopback plugin reports a provider-level free-tier error. Match it
-    /// to the freshest tunnel from the same OpenCode process; do not infer a
-    /// route from timing alone when process attribution is unavailable.
+    /// The loopback plugin reports a provider-level free-tier error. Attribute
+    /// it to the tunnel that most recently received response bytes from the
+    /// same OpenCode process. If two different entries are equally plausible,
+    /// decline to pause either: a wrong quarantine removes a healthy proxy and
+    /// leaves the actually limited one in rotation.
     func reportFreeUsageLimit(
         retryAfterMs: Double,
         reportClientPort: UInt16?,
@@ -649,27 +670,42 @@ actor EdgeDaemon {
         now: Double = Date().timeIntervalSince1970
     ) -> EdgeFreeUsageLimitReport {
         guard Self.validFreeUsageCooldown(retryAfterMs), now.isFinite else { return .invalidCooldown }
+        guard let reportClientPort,
+              let reporter = (peerResolver?(reportClientPort, edgePort)
+                  ?? attribution.peer(forClientPort: reportClientPort, edgePort: edgePort)),
+              Self.isOpenCodeProcessName(reporter.name) else { return .unmatched }
+
         // OpenCode's Test All probe intentionally uses the selected upstream
         // directly so it cannot rotate onto another healthy pool member. Its
         // loopback plugin report therefore carries the explicit tested entry.
         // Normal OpenCode sessions still require same-process tunnel matching.
         if let explicitEntryID, !explicitEntryID.isEmpty {
-            guard let reportClientPort,
-                  let reporter = attribution.peer(forClientPort: reportClientPort, edgePort: edgePort),
-                  Self.isOpenCodeProcessName(reporter.name) else { return .unmatched }
             return persistFreeUsageLimit(entryID: explicitEntryID, retryAfterMs: retryAfterMs, now: now)
         }
-        guard let reportClientPort,
-              let reporter = attribution.peer(forClientPort: reportClientPort, edgePort: edgePort),
-              let tunnel = Self.matchingTunnel(
-                peerPID: reporter.pid,
-                edgePort: edgePort,
-                active: Array(tunnelsActive.values),
-                recent: tunnelsRecent,
-                now: now
-              ),
-              let entryID = tunnel.entryID else { return .unmatched }
-        return persistFreeUsageLimit(entryID: entryID, retryAfterMs: retryAfterMs, now: now)
+
+        switch Self.matchingTunnel(
+            peerPID: reporter.pid,
+            edgePort: edgePort,
+            active: Array(tunnelsActive.values),
+            recent: tunnelsRecent,
+            now: now
+        ) {
+        case .matched(let tunnel):
+            guard let entryID = tunnel.entryID else { return .unmatched }
+            return persistFreeUsageLimit(entryID: entryID, retryAfterMs: retryAfterMs, now: now)
+        case .ambiguous(let entryIDs):
+            log.warn(
+                "free-usage report is ambiguous for OpenCode pid \(reporter.pid); "
+                    + "not pausing any proxy (candidates: \(entryIDs.joined(separator: ", ")))"
+            )
+            return .unmatched
+        case .none:
+            log.warn(
+                "free-usage report had no attributable tunnel for OpenCode pid \(reporter.pid) "
+                    + "on Edge port \(edgePort)"
+            )
+            return .unmatched
+        }
     }
 
     /// Persists the matched proxy's cooldown. Kept internal for deterministic
@@ -707,23 +743,49 @@ actor EdgeDaemon {
         name.caseInsensitiveCompare("opencode") == .orderedSame
     }
 
+    /// How recently a tunnel must have delivered response bytes for a report
+    /// to be attributable to it. Matches the existing recent-tunnel window.
+    static let freeUsageActivityWindow: TimeInterval = 120
+    /// Two different entries whose last response bytes are this close are
+    /// indistinguishable from the report's point of view.
+    static let freeUsageAmbiguityWindow: TimeInterval = 2
+
     static func matchingTunnel(
         peerPID: Int32,
         edgePort: UInt16,
         active: [TunnelRecord],
         recent: [TunnelRecord],
         now: Double
-    ) -> TunnelRecord? {
+    ) -> TunnelMatch {
         let candidates = (active + recent).filter { tunnel in
             guard tunnel.peerPid == peerPID,
                   tunnel.edgePort == edgePort,
                   tunnel.entryID != nil,
-                  tunnel.startedAt <= now else { return false }
+                  tunnel.startedAt <= now,
+                  let activity = tunnel.lastDownstreamAt,
+                  activity.isFinite,
+                  activity <= now,
+                  now - activity <= Self.freeUsageActivityWindow else { return false }
             if tunnel.active { return true }
             let endedAt = tunnel.endedAt ?? tunnel.startedAt
-            return endedAt <= now && now - endedAt <= 120
+            return endedAt <= now && now - endedAt <= Self.freeUsageActivityWindow
         }
-        return candidates.max { $0.startedAt < $1.startedAt }
+        guard let best = candidates.max(by: {
+            ($0.lastDownstreamAt ?? 0) < ($1.lastDownstreamAt ?? 0)
+        }), let bestAt = best.lastDownstreamAt else { return .none }
+
+        // A response from another entry within the ambiguity window could be
+        // the one the plugin actually saw. Decline rather than guess.
+        let rivals = candidates.filter { candidate in
+            guard candidate.entryID != best.entryID,
+                  let activity = candidate.lastDownstreamAt else { return false }
+            return bestAt - activity <= Self.freeUsageAmbiguityWindow
+        }
+        guard rivals.isEmpty else {
+            let entryIDs = ([best] + rivals).compactMap(\.entryID)
+            return .ambiguous(entryIDs: Array(Set(entryIDs)).sorted())
+        }
+        return .matched(best)
     }
 
     /// Single-flight resolve of one pinned entry through the standard route
@@ -1169,7 +1231,8 @@ actor EdgeDaemon {
         // Resolve the peer now: the client TCP connection is guaranteed to be
         // established at registration, while a lookup from `status()` may run
         // after the tunnel closed and can no longer be attributed.
-        let peer = attribution.peer(forClientPort: clientPort, edgePort: edgePort)
+        let peer = peerResolver?(clientPort, edgePort)
+            ?? attribution.peer(forClientPort: clientPort, edgePort: edgePort)
         tunnelsActive[clientPort] = TunnelRecord(
             clientPort: clientPort,
             edgePort: edgePort,
@@ -1185,6 +1248,20 @@ actor EdgeDaemon {
             bytesDown: 0,
             active: true
         )
+    }
+
+    /// Records the last upstream -> client byte delivered on a live tunnel.
+    /// Free-limit reports are attributed by this timestamp, not by the order
+    /// in which tunnels were opened: an older tunnel can be the one that just
+    /// received a 429 while a newer tunnel sits idle.
+    func noteTunnelActivity(clientPort: UInt16?, at timestamp: Double = Date().timeIntervalSince1970) {
+        guard let clientPort,
+              timestamp.isFinite,
+              var record = tunnelsActive[clientPort] else { return }
+        if record.lastDownstreamAt.map({ timestamp > $0 }) ?? true {
+            record.lastDownstreamAt = timestamp
+            tunnelsActive[clientPort] = record
+        }
     }
 
     func finishTunnel(clientPort: UInt16?, bytesUp: Int, bytesDown: Int) {
