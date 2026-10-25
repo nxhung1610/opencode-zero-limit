@@ -115,7 +115,7 @@ final class ProxyAppModel: ObservableObject {
     }
 
     func load() {
-        freeUsageProbeStatuses = [:]
+        resetFreeUsageProbeStatuses()
         do {
             state = try store.loadWithFreeUsageLimits()
             loadError = nil
@@ -127,6 +127,12 @@ final class ProxyAppModel: ObservableObject {
 
     func reload() {
         load()
+    }
+
+    /// Cached quota states belong to the pool that was probed, so every load
+    /// or mutation clears them instead of showing limits for stale entries.
+    private func resetFreeUsageProbeStatuses() {
+        freeUsageProbeStatuses = [:]
     }
 
     func selectMode(_ mode: ProxyMode, source: RoutingChangeSource = .window) async {
@@ -249,7 +255,7 @@ final class ProxyAppModel: ObservableObject {
     func setEnabled(_ id: String, enabled: Bool) {
         do {
             state = try store.setEnabled(id, enabled: enabled)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -269,7 +275,7 @@ final class ProxyAppModel: ObservableObject {
     func removeProxy(_ id: String) {
         do {
             state = try store.remove(id)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -280,7 +286,7 @@ final class ProxyAppModel: ObservableObject {
     func importProxies(_ text: String) -> String? {
         do {
             state = try store.importProxies(text)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
             return nil
         } catch {
@@ -292,7 +298,7 @@ final class ProxyAppModel: ObservableObject {
     func addProxyURL(_ input: String) -> String? {
         do {
             state = try store.addProxyURL(input)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
             return nil
         } catch {
@@ -304,7 +310,7 @@ final class ProxyAppModel: ObservableObject {
     func addProxyScript(name: String, script: String) -> String? {
         do {
             state = try store.addProxyScript(name: name, script: script)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
             return nil
         } catch {
@@ -316,7 +322,7 @@ final class ProxyAppModel: ObservableObject {
     func updateProxyScript(id: String, name: String, script: String) -> String? {
         do {
             state = try store.updateProxyScript(id: id, name: name, script: script)
-            freeUsageProbeStatuses = [:]
+            resetFreeUsageProbeStatuses()
             errorMessage = nil
             return nil
         } catch {
@@ -327,7 +333,7 @@ final class ProxyAppModel: ObservableObject {
     func testAll() async {
         guard !isTesting, state != nil else { return }
         isTesting = true
-        freeUsageProbeStatuses = [:]
+        resetFreeUsageProbeStatuses()
         defer { isTesting = false }
         var quotaProbe: (config: EdgeConfigFile, healthyEntryIDs: Set<String>)?
         // Edge owns the script cache and the checks that feed it: delegate so
