@@ -106,6 +106,10 @@ actor EdgeDaemon {
     private var stateEverLoaded = false
     private var bindings: [String: String] = [:]
     private var upstream: EdgeUpstream?
+    /// The manual selection the cached `upstream` and the throttle/backoff
+    /// gates belong to. A new selection must never inherit the previous
+    /// entry's cooldown (or its cached endpoint).
+    private var lastSelectionKey: String?
     private var autoUpstreams: [String: EdgeUpstream] = [:]
     private var autoResolveTasks: [String: Task<ResolveOutcome, Never>] = [:]
     private var autoRetryAtByEntry: [String: Double] = [:]
@@ -252,6 +256,12 @@ actor EdgeDaemon {
             autoUpstreams[id] = nil
             autoErrors[id] = nil
             autoRetryAtByEntry[id] = nil
+            if state.mode == .manual, state.manualId == id {
+                // The cooldown belonged to the old script; the new one must
+                // get a chance to resolve on the next connection.
+                throttleRetryAt = nil
+                resolveBackoffUntil = 0
+            }
             if upstream?.entryID == id {
                 upstream = nil
                 pendingReason = nil
@@ -287,6 +297,32 @@ actor EdgeDaemon {
         return false
     }
 
+    /// Identity of the route a decision is for. Cached endpoints and the
+    /// global throttle/backoff gates belong to exactly one selection; when
+    /// this changes, the old state must be dropped. Same-entry re-resolves
+    /// (`strikes`, `refreshAt`) keep the same key, which is what preserves
+    /// stale-while-error.
+    private func selectionKey(_ state: ProxyState, now: Double) -> String {
+        switch state.mode {
+        case .off:
+            return "off"
+        case .auto:
+            return "auto"
+        case .manual:
+            guard let id = state.manualId else { return "manual|-" }
+            guard let entry = state.proxies.first(where: { $0.id == id }) else {
+                return "manual|\(id)|missing"
+            }
+            guard entry.enabled, entry.hasValidDefinition else {
+                return "manual|\(id)|invalid"
+            }
+            guard !entry.isFreeUsageLimited(at: now) else {
+                return "manual|\(id)|limited"
+            }
+            return "manual|\(id)|ok"
+        }
+    }
+
     private static func defaultRefusal(_ state: ProxyState) -> String {
         state.mode == .manual ? "no usable proxy is selected" : "no proxy in the pool is usable"
     }
@@ -298,6 +334,19 @@ actor EdgeDaemon {
         let now = Date().timeIntervalSince1970
         guard let state = loadState() else {
             return .refuse(reason: "proxies.json could not be read on this Mac", retryAt: nil)
+        }
+        let key = selectionKey(state, now: now)
+        let changed = key != lastSelectionKey
+        lastSelectionKey = key
+        if changed, state.mode == .manual {
+            // Fail closed: a cached endpoint from another selection (or from
+            // an entry that is now disabled, removed, or limited) must not be
+            // served. Same-entry refresh failures keep the key, so the
+            // documented stale-while-error behavior still applies.
+            upstream = nil
+            pendingReason = nil
+            throttleRetryAt = nil
+            resolveBackoffUntil = 0
         }
         if state.mode == .off { return .direct }
         if state.mode == .auto {

@@ -357,6 +357,199 @@ struct EdgeDaemonTests {
         }
     }
 
+    // MARK: - Manual fail-closed
+
+    private func makeManualFixture() throws -> (directory: URL, store: ProxyStore, daemon: EdgeDaemon) {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-manual-fail-closed-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ProxyStore(configDirectory: directory)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        return (directory, store, daemon)
+    }
+
+    @Test func manualSelectionDisabledRefusesInsteadOfServingTheCachedUpstream() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let entry = imported.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+
+        guard case .upstream(let cached) = await daemon.decideRoute(), cached.entryID == entry.id else {
+            Issue.record("the selected entry should resolve first")
+            return
+        }
+
+        _ = try store.setEnabled(entry.id, enabled: false)
+        guard case .refuse(let reason, _) = await daemon.decideRoute() else {
+            Issue.record("a disabled manual selection must refuse instead of serving its cached endpoint")
+            return
+        }
+        #expect(reason.contains("disabled"))
+    }
+
+    @Test func manualSelectionRemovalRefusesInsteadOfServingTheCachedUpstream() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let entry = imported.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+
+        guard case .upstream = await daemon.decideRoute() else {
+            Issue.record("the selected entry should resolve first")
+            return
+        }
+
+        _ = try store.remove(entry.id)
+        guard case .refuse(let reason, _) = await daemon.decideRoute() else {
+            Issue.record("a removed manual selection must refuse instead of serving its cached endpoint")
+            return
+        }
+        #expect(reason.contains("No proxy is selected"))
+    }
+
+    @Test func switchingManualSelectionDropsTheCachedUpstream() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies(
+            "http://proxy-a.example:8080\nhttp://proxy-b.example:8080"
+        )
+        _ = try store.setMode(.manual, manualId: imported.proxies[0].id)
+        guard case .upstream(let first) = await daemon.decideRoute() else {
+            Issue.record("the first selection should resolve")
+            return
+        }
+        #expect(first.entryID == imported.proxies[0].id)
+
+        _ = try store.setMode(.manual, manualId: imported.proxies[1].id)
+        guard case .upstream(let second) = await daemon.decideRoute() else {
+            Issue.record("the new selection should resolve")
+            return
+        }
+        #expect(second.entryID == imported.proxies[1].id)
+    }
+
+    @Test func manualSwitchAfterACooldownUsesTheNewSelectionImmediately() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scripted = try store.addProxyScript(
+            name: "Cooling down",
+            script: "throw new Error('Còn 15s mới có thể đổi proxy');"
+        )
+        let cooling = scripted.proxies[0]
+        let imported = try store.importProxies("http://proxy-b.example:8080")
+        let healthy = try #require(imported.proxies.first { $0.url == "http://proxy-b.example:8080" })
+        _ = try store.setMode(.manual, manualId: cooling.id)
+
+        guard case .refuse(_, let retryAt) = await daemon.decideRoute() else {
+            Issue.record("a failing script must refuse while its provider cools down")
+            return
+        }
+        #expect(retryAt != nil)
+
+        _ = try store.setMode(.manual, manualId: healthy.id)
+        guard case .upstream(let selected) = await daemon.decideRoute() else {
+            Issue.record("a new manual selection must not inherit the previous entry's cooldown")
+            return
+        }
+        #expect(selected.entryID == healthy.id)
+    }
+
+    @Test func manualTransientFailureKeepsTheSameEntry() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = """
+        if (cache.attempts) { throw new Error("Còn 9s mới có thể đổi proxy"); }
+        cache.attempts = 1;
+        cache.url = "http://proxy-a.example:8080";
+        cache.expiresAt = Date.now() + 8000;
+        return cache.url;
+        """
+        let added = try store.addProxyScript(name: "Transient", script: script)
+        let entry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.manual, manualId: entry.id)
+
+        guard case .upstream(let first) = await daemon.decideRoute() else {
+            Issue.record("the script should resolve on its first run")
+            return
+        }
+        #expect(first.url == "http://proxy-a.example:8080")
+        #expect(first.refreshAt != nil)
+        #expect((first.refreshAt ?? .infinity) < Date().timeIntervalSince1970)
+
+        // The snapshot's lifetime puts `refreshAt` in the past, so this
+        // decision re-resolves; the script then reports a provider cooldown.
+        guard case .upstream(let second) = await daemon.decideRoute() else {
+            Issue.record("a refresh failure on the same entry must keep serving the cached endpoint")
+            return
+        }
+        #expect(second.entryID == entry.id)
+        #expect(second.url == first.url)
+        let status = await daemon.status()
+        #expect(status.throttleRetryAt != nil)
+        #expect(status.lastErrors.contains { $0.hasPrefix("deferred:") })
+
+        guard case .upstream(let third) = await daemon.decideRoute() else {
+            Issue.record("the cached endpoint must survive the provider cooldown window")
+            return
+        }
+        #expect(third.entryID == entry.id)
+    }
+
+    @Test func manualFailureWithDirectFallbackUsesFallbackNotTheCachedUpstream() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imported = try store.importProxies("http://proxy-a.example:8080")
+        let entry = imported.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+        _ = try store.setDirectFallback(true)
+
+        guard case .upstream = await daemon.decideRoute() else {
+            Issue.record("the selected entry should resolve first")
+            return
+        }
+
+        _ = try store.setEnabled(entry.id, enabled: false)
+        guard case .directFallback(let reason) = await daemon.decideRoute() else {
+            Issue.record("the opt-in fallback must dial direct rather than reuse the disabled entry")
+            return
+        }
+        #expect(reason.contains("disabled"))
+    }
+
+    @Test func editingTheActiveManualScriptClearsItsCooldown() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(
+            name: "Before edit",
+            script: "throw new Error('Còn 15s mới có thể đổi proxy');"
+        )
+        let entry = added.proxies[0]
+        _ = try store.setMode(.manual, manualId: entry.id)
+
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("the failing script should refuse")
+            return
+        }
+
+        _ = try store.updateProxyScript(
+            id: entry.id,
+            name: "After edit",
+            script: "return 'http://proxy-a.example:8080';"
+        )
+        guard case .upstream(let selected) = await daemon.decideRoute() else {
+            Issue.record("an edited script must not stay blocked by the old script's cooldown")
+            return
+        }
+        #expect(selected.entryID == entry.id)
+        #expect(selected.url == "http://proxy-a.example:8080")
+    }
+
     // MARK: - Direct fallback (opt-in)
 
     private func makeFallbackFixture() throws -> (directory: URL, store: ProxyStore, daemon: EdgeDaemon) {
