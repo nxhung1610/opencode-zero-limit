@@ -639,7 +639,7 @@ private extension UIFixturesTests {
         proxies: [ProxyEntry],
         tab: ProxyAppTab = .routing,
         directFallback: Bool = false,
-        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.4.5"),
+        currentVersion: SemanticVersion? = SemanticVersion(tag: "0.4.6"),
         routingSetupState: RoutingSetupModel.State = .installed(
             .init(agentPlistInstalled: true, componentsOutOfDate: false)
         ),
