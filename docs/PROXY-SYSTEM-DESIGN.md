@@ -201,6 +201,29 @@ by Edge instead of at spawn time.
   from `/__relaydock/status` (polled while a surface is visible; a miss reads as “not running”,
   never as an error).
 
+### 4.5 OpenCode free-usage cooldowns
+
+- **Report path:** the installed loopback plugin sees `FreeUsageLimitError` and POSTs a
+  free-usage report to Edge on the port that carried the request. The plugin does not decide
+  which proxy to pause.
+- **Attribution:** Edge accepts the report only from an OpenCode process it can identify, on the
+  same Edge port. Among that process's live and recently ended tunnels (120 s window), it picks
+  the one that most recently delivered response bytes. If a different entry delivered bytes
+  within two seconds of the winner, the report is ambiguous and Edge pauses nothing. Response
+  timing, not tunnel age, is the signal: an older tunnel can receive the 429 while a newer one
+  sits idle.
+- **Deadline:** the sidecar `free-usage-limits.json` stores one absolute deadline per entry and
+  never shortens a deadline. The provider's structured reset (`retryAfter`, `retryAfterMs`,
+  `resetAtMs`) wins; the fallback is the next 00:00 UTC, clamped to 1 s…7 d. Zero or past
+  structured resets clamp to 1 s, not 24 h. Expired entries remain on disk as harmless history.
+- **UI:** the pool row shows the pause and its absolute local reset. **Retry now** runs the same
+  isolated OpenCode probe used by `Test All` through that one entry; the cooldown clears only if
+  the probe passes. An automatic recheck is limited to once per cooldown and only within the
+  final 15 minutes, so RelayDock does not create a retry-pace signal during a long pause.
+- **Scope warning:** the free lane is account/network-wide (§7 of the research note). Two or more
+  enabled entries with reset deadlines within 30 minutes raise a pool banner saying so; RelayDock does not try
+  to rotate around an account-level limit.
+
 ## 5. Files, ports, lifecycle
 
 - **Default port `57211`** on `127.0.0.1`; installer probes for a free port, writes
