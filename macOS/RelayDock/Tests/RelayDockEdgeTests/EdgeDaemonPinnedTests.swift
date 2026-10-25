@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import RelayDockCore
 import Testing
@@ -130,5 +131,61 @@ struct EdgeDaemonPinnedTests {
         }
         #expect(persisted.scriptHash == ScriptCacheFile.scriptHash(script))
         #expect(persisted.snapshot.contains("127.0.0.1:9"))
+    }
+
+    /// A pinned listener caches its own resolution. An edit must invalidate
+    /// that endpoint immediately, even when the old snapshot carries a long
+    /// expiry the cache would otherwise honor.
+    @Test func editingAPinnedScriptDropsItsCachedResolution() async throws {
+        let (directory, store, daemon) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = """
+        cache.url = "http://old.example:8080";
+        cache.expiresAt = Date.now() + 3600000;
+        return cache.url;
+        """
+        let added = try store.addProxyScript(name: "Pinned rotation", script: script)
+        let entry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+
+        guard case .upstream(let first) = await daemon.decideRoute(pinning: entry.id) else {
+            Issue.record("the pinned script should resolve")
+            return
+        }
+        #expect(first.url == "http://old.example:8080")
+
+        _ = try store.updateProxyScript(
+            id: entry.id,
+            name: "Pinned rotation",
+            script: "return 'http://new.example:8080';"
+        )
+        guard case .upstream(let second) = await daemon.decideRoute(pinning: entry.id) else {
+            Issue.record("the edited pinned script should resolve again")
+            return
+        }
+        #expect(second.url == "http://new.example:8080")
+    }
+
+    /// Attribution and free-usage reports must carry the listener's own port;
+    /// using the primary `edge.json` port made pinned tunnels unmatchable.
+    @Test func pinnedServerConnectionsCarryTheirOwnListenerPort() throws {
+        let (directory, _, daemon) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let server = try EdgeServer(
+            config: EdgeConfigFile(port: 57_999),
+            daemon: daemon,
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            role: .pinned(entryID: "px_a"),
+            port: 58_123
+        )
+        var pair: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+            Issue.record("socketpair failed")
+            return
+        }
+        defer { close(pair[1]) }
+
+        let connection = server.makeClientConnection(clientFD: pair[0], peerPort: 40_001)
+        #expect(connection.edgePort == 58_123)
     }
 }

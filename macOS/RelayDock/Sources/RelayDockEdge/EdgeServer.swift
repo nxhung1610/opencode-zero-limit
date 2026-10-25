@@ -105,17 +105,23 @@ final class EdgeServer: @unchecked Sendable {
                 Darwin.close(clientFD)
                 return
             }
-            EdgeClientConnection(
-                socket: EdgeSocket(fd: clientFD, peerPort: peerPort, label: "relaydock.edge.client"),
-                peerPort: peerPort,
-                daemon: self.daemon,
-                config: self.config,
-                log: self.log,
-                pinnedEntryID: self.role.entryID
-            ).start()
+            self.makeClientConnection(clientFD: clientFD, peerPort: peerPort).start()
         }
         self.acceptor = acceptor
         acceptor.start()
+    }
+
+    /// Builds one connection bound to this listener's own port. Extracted so
+    /// the attribution wiring is testable without opening a socket.
+    func makeClientConnection(clientFD: Int32, peerPort: UInt16?) -> EdgeClientConnection {
+        EdgeClientConnection(
+            socket: EdgeSocket(fd: clientFD, peerPort: peerPort, label: "relaydock.edge.client"),
+            peerPort: peerPort,
+            daemon: daemon,
+            edgePort: port,
+            log: log,
+            pinnedEntryID: role.entryID
+        )
     }
 
     /// A blocking loopback listener with SO_REUSEADDR (see the type comment

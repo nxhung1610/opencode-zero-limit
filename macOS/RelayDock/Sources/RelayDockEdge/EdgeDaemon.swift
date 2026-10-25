@@ -138,7 +138,10 @@ actor EdgeDaemon {
     private var failureStreak: [String: Int] = [:]
     private var schedulerTask: Task<Void, Never>?
     private var pinnedUpstreams: [String: EdgeUpstream] = [:]
-    private var pinnedResolveTasks: [String: Task<EdgeUpstream?, Never>] = [:]
+    private var pinnedResolveTasks: [String: (generation: Int, task: Task<EdgeUpstream?, Never>)] = [:]
+    /// Bumped when an entry's script changes. An in-flight pinned resolve
+    /// captured the old script, so its result must never be cached.
+    private var pinnedResolveGeneration: [String: Int] = [:]
     private var pinnedErrors: [String: String] = [:]
     private var hopPool: [String: [(socket: EdgeSocket, createdAt: Double)]] = [:]
     private let hopPoolLifetime: TimeInterval = 20
@@ -251,11 +254,17 @@ actor EdgeDaemon {
         }
         let scriptIDs = Set(state.proxies.filter { $0.script != nil }.map(\.id))
         scriptHashes = scriptHashes.filter { scriptIDs.contains($0.key) }
+        pinnedResolveGeneration = pinnedResolveGeneration.filter { scriptIDs.contains($0.key) }
         for id in editedIDs {
             removeProxyScriptCacheSnapshot(for: id)
             autoUpstreams[id] = nil
             autoErrors[id] = nil
             autoRetryAtByEntry[id] = nil
+            // A pinned listener caches its own resolution. Drop it, and
+            // invalidate any resolve that started with the old script.
+            pinnedUpstreams[id] = nil
+            pinnedErrors[id] = nil
+            pinnedResolveGeneration[id, default: 0] += 1
             if state.mode == .manual, state.manualId == id {
                 // The cooldown belonged to the old script; the new one must
                 // get a chance to resolve on the next connection.
@@ -661,7 +670,21 @@ actor EdgeDaemon {
     /// machinery (a forced manual selection over a state that contains only
     /// this entry), caching the result the way the pool-wide resolve does.
     private func resolvePinned(entry: ProxyEntry) async -> EdgeUpstream? {
-        if let task = pinnedResolveTasks[entry.id] { return await task.value }
+        if let pending = pinnedResolveTasks[entry.id] {
+            let resolved = await pending.task.value
+            guard pinnedResolveGeneration[entry.id, default: 0] == pending.generation else {
+                // The joining caller must discard the old script's result too,
+                // not just the caller that created the task. Only clear the
+                // cache while this is still the newest resolve: once a newer
+                // task exists, its snapshot must survive.
+                if pinnedResolveTasks[entry.id]?.generation == pending.generation {
+                    removeProxyScriptCacheSnapshot(for: entry.id)
+                }
+                return nil
+            }
+            return resolved
+        }
+        let generation = pinnedResolveGeneration[entry.id, default: 0]
         var placement = ProxyState.defaults
         placement.mode = .manual
         placement.manualId = entry.id
@@ -670,9 +693,18 @@ actor EdgeDaemon {
         let task = Task.detached(priority: .userInitiated) { () -> EdgeUpstream? in
             Self.performPinnedResolve(placement: placement, entry: entry, log: log)
         }
-        pinnedResolveTasks[entry.id] = task
+        pinnedResolveTasks[entry.id] = (generation, task)
         let resolved = await task.value
-        pinnedResolveTasks[entry.id] = nil
+        if pinnedResolveTasks[entry.id]?.generation == generation {
+            pinnedResolveTasks[entry.id] = nil
+        }
+        guard pinnedResolveGeneration[entry.id, default: 0] == generation else {
+            // The script changed while the old one was running. Its cache
+            // snapshot may have been written after the edit cleared it, so
+            // remove it again before refusing.
+            removeProxyScriptCacheSnapshot(for: entry.id)
+            return nil
+        }
         if let resolved {
             pinnedUpstreams[entry.id] = resolved
             pinnedErrors[entry.id] = nil

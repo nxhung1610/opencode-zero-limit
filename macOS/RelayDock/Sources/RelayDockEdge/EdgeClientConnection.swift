@@ -8,7 +8,10 @@ import RelayDockCore
 final class EdgeClientConnection: @unchecked Sendable {
     private let socket: EdgeSocket
     private let daemon: EdgeDaemon
-    private let config: EdgeConfigFile
+    /// The actual loopback port this connection arrived on. Tunnel attribution
+    /// and free-usage reports must use the listener's port, not the primary
+    /// `edge.json` port a pinned server also carries.
+    let edgePort: UInt16
     private let log: EdgeLog
     private let clientPort: UInt16?
     /// Non-nil when this connection arrived on a listener pinned to one
@@ -19,13 +22,13 @@ final class EdgeClientConnection: @unchecked Sendable {
         socket: EdgeSocket,
         peerPort: UInt16?,
         daemon: EdgeDaemon,
-        config: EdgeConfigFile,
+        edgePort: UInt16,
         log: EdgeLog,
         pinnedEntryID: String? = nil
     ) {
         self.socket = socket
         self.daemon = daemon
-        self.config = config
+        self.edgePort = edgePort
         self.log = log
         self.clientPort = peerPort
         self.pinnedEntryID = pinnedEntryID
@@ -94,7 +97,7 @@ final class EdgeClientConnection: @unchecked Sendable {
             let result = await daemon.reportFreeUsageLimit(
                 retryAfterMs: retryAfterMs,
                 reportClientPort: clientPort,
-                edgePort: UInt16(truncatingIfNeeded: config.port),
+                edgePort: edgePort,
                 explicitEntryID: query["entryID"]
             )
             switch result {
@@ -415,7 +418,7 @@ final class EdgeClientConnection: @unchecked Sendable {
     ) async throws {
         await daemon.registerTunnel(
             clientPort: clientPort,
-            edgePort: UInt16(truncatingIfNeeded: config.port),
+            edgePort: edgePort,
             entryID: upstreamEntryID,
             label: label
         )
