@@ -90,6 +90,9 @@ actor EdgeDaemon {
             case throttled(retryAt: Double, message: String)
             case failed(message: String)
             case modeChanged
+            /// The resolve finished for a route that no longer exists. It is
+            /// discarded without touching caches, errors, or cooldowns.
+            case stale
         }
         var kind: Kind
     }
@@ -124,7 +127,7 @@ actor EdgeDaemon {
     /// entry's cooldown (or its cached endpoint).
     private var lastSelectionKey: String?
     private var autoUpstreams: [String: EdgeUpstream] = [:]
-    private var autoResolveTasks: [String: Task<ResolveOutcome, Never>] = [:]
+    private var autoResolveTasks: [String: InFlightResolve] = [:]
     private var autoRetryAtByEntry: [String: Double] = [:]
     private var autoErrors: [String: String] = [:]
     private var autoLastEntryID: String?
@@ -491,6 +494,8 @@ actor EdgeDaemon {
                 resolutionErrors.append(message)
             case .modeChanged:
                 break
+            case .stale:
+                break
             }
             attempted.insert(entry.id)
         }
@@ -509,17 +514,46 @@ actor EdgeDaemon {
     }
 
     private func resolveAutoEntry(_ entry: ProxyEntry) async -> ResolveOutcome {
-        if let task = autoResolveTasks[entry.id] { return await task.value }
+        if let inFlight = autoResolveTasks[entry.id] {
+            let outcome = await inFlight.task.value
+            clearAutoResolveTask(inFlight, entryID: entry.id)
+            guard resolveIsCurrent(inFlight, outcome: outcome) else {
+                log.info("discarded an Auto resolve that no longer matches the current route")
+                return ResolveOutcome(kind: .stale)
+            }
+            return outcome
+        }
         let placement = ProxyState(mode: .manual, manualId: entry.id, proxies: [entry])
         let directory = self.directory
         let log = self.log
         let task = Task.detached(priority: .userInitiated) {
             Self.performResolve(selection: placement, bindings: [:], directory: directory, log: log)
         }
-        autoResolveTasks[entry.id] = task
+        resolveTaskSequence += 1
+        let inFlight = InFlightResolve(
+            id: resolveTaskSequence,
+            selectionEpoch: selectionEpoch,
+            selectionKey: "auto",
+            scriptHashes: scriptHashes,
+            bindings: [:],
+            task: task
+        )
+        autoResolveTasks[entry.id] = inFlight
         let outcome = await task.value
-        autoResolveTasks[entry.id] = nil
+        clearAutoResolveTask(inFlight, entryID: entry.id)
+        guard resolveIsCurrent(inFlight, outcome: outcome) else {
+            log.info("discarded an Auto resolve that no longer matches the current route")
+            return ResolveOutcome(kind: .stale)
+        }
         return outcome
+    }
+
+    /// Only clears the task this caller joined; a newer resolve for the same
+    /// entry must survive a stale caller waking up late.
+    private func clearAutoResolveTask(_ inFlight: InFlightResolve, entryID: String) {
+        if autoResolveTasks[entryID]?.id == inFlight.id {
+            autoResolveTasks[entryID] = nil
+        }
     }
 
     private func selectAutoUpstream(_ resolved: EdgeUpstream) {
@@ -983,6 +1017,8 @@ actor EdgeDaemon {
             pushError(message)
         case .modeChanged:
             break
+        case .stale:
+            break
         }
     }
 
@@ -1051,7 +1087,7 @@ actor EdgeDaemon {
            let outcome = await resolveLocked(state: state) {
             switch outcome.kind {
             case .success(let resolved, _): return resolved
-            case .throttled, .failed, .modeChanged: break
+            case .throttled, .failed, .modeChanged, .stale: break
             }
         }
         if strikes >= 3 { return nil }

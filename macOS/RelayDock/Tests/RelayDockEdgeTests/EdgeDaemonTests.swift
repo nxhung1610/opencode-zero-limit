@@ -536,6 +536,44 @@ struct EdgeDaemonTests {
         #expect(fresh.url == "http://new.example:8080")
     }
 
+    /// Auto caches per-entry resolves too. Editing a script while that entry is
+    /// resolving must not put the old script's endpoint back into the pool.
+    @Test func editingAnAutoScriptWhileResolvingNeverServesTheOldEndpoint() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(name: "Auto rotating", script: """
+        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        return 'http://old.example:8080';
+        """)
+        let entry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.auto, manualId: nil)
+
+        let first = Task { await daemon.decideRoute() }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        _ = try store.updateProxyScript(
+            id: entry.id,
+            name: "Auto rotating",
+            script: "return 'http://new.example:8080';"
+        )
+
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("Auto must discard a resolve started for the old script")
+            return
+        }
+        if case .upstream(let stale) = await first.value {
+            Issue.record("Auto must not serve the edited script's old endpoint \(stale.url)")
+        }
+        #expect(await daemon.status().upstream == nil, "a stale Auto resolve must not be applied")
+
+        guard case .upstream(let fresh) = await daemon.decideRoute() else {
+            Issue.record("Auto should resolve the edited script on the next request")
+            return
+        }
+        #expect(fresh.entryID == entry.id)
+        #expect(fresh.url == "http://new.example:8080")
+    }
+
     @Test func manualTransientFailureKeepsTheSameEntry() async throws {
         let (directory, store, daemon) = try makeManualFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
