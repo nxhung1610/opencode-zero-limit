@@ -18,7 +18,7 @@ struct EdgeUpstream: Equatable, Sendable {
     var strikes: Int
 }
 
-enum EdgeRouteDecision {
+enum EdgeRouteDecision: Sendable {
     case direct
     /// The pool's opt-in direct fallback: no proxy is usable and the state
     /// explicitly allows direct. The relay labels the tunnel and counts it —
@@ -94,6 +94,19 @@ actor EdgeDaemon {
         var kind: Kind
     }
 
+    /// A resolve that callers can join while it runs. It carries the identity
+    /// of the route it was started for: an actor call may change the selection
+    /// or edit a script while the detached script work is still running, and
+    /// that old result must never be applied or served afterwards.
+    private struct InFlightResolve {
+        let id: Int
+        let selectionEpoch: Int
+        let selectionKey: String
+        let scriptHashes: [String: String]
+        let bindings: [String: String]
+        let task: Task<ResolveOutcome, Never>
+    }
+
     let config: EdgeConfigFile
     let log: EdgeLog
     private let directory: URL
@@ -116,7 +129,12 @@ actor EdgeDaemon {
     private var autoErrors: [String: String] = [:]
     private var autoLastEntryID: String?
     private var lastAutoFailureAt: [String: Double] = [:]
-    private var resolveTask: Task<ResolveOutcome, Never>?
+    private var resolveTask: InFlightResolve?
+    private var resolveTaskSequence = 0
+    /// Bumped whenever a selection or a script changes. `selectionKey` alone is
+    /// not enough: a switch away and back (A → B → A) would otherwise let a
+    /// resolve started for the first A apply after the second A is selected.
+    private var selectionEpoch = 0
     private var throttleRetryAt: Double?
     private var resolveBackoffUntil: Double = 0
     private var pendingReason: String?
@@ -255,6 +273,9 @@ actor EdgeDaemon {
         let scriptIDs = Set(state.proxies.filter { $0.script != nil }.map(\.id))
         scriptHashes = scriptHashes.filter { scriptIDs.contains($0.key) }
         pinnedResolveGeneration = pinnedResolveGeneration.filter { scriptIDs.contains($0.key) }
+        if !editedIDs.isEmpty {
+            selectionEpoch &+= 1
+        }
         for id in editedIDs {
             removeProxyScriptCacheSnapshot(for: id)
             autoUpstreams[id] = nil
@@ -347,6 +368,11 @@ actor EdgeDaemon {
         let key = selectionKey(state, now: now)
         let changed = key != lastSelectionKey
         lastSelectionKey = key
+        if changed {
+            // Any in-flight resolve was started for the previous route; it
+            // must not be applied when it finishes.
+            selectionEpoch &+= 1
+        }
         if changed, state.mode == .manual {
             // Fail closed: a cached endpoint from another selection (or from
             // an entry that is now disabled, removed, or limited) must not be
@@ -780,23 +806,79 @@ actor EdgeDaemon {
 
     @discardableResult
     private func resolveLocked(state: ProxyState) async -> ResolveOutcome? {
-        if let resolveTask { return await resolveTask.value }
+        if let inFlight = resolveTask {
+            let outcome = await inFlight.task.value
+            clearResolveTask(inFlight)
+            guard resolveIsCurrent(inFlight, outcome: outcome) else {
+                log.info("discarded a resolve that no longer matches the current route")
+                return nil
+            }
+            return outcome
+        }
         let now = Date().timeIntervalSince1970
         if now < resolveBackoffUntil { return nil }
         if let retryAt = throttleRetryAt, now < retryAt { return nil }
         syncScriptCacheFromDisk(state: state, force: lastCacheImportMtime == nil)
         let selection = stateForSelection(state)
         let snapshotBindings = bindings
+        let key = selectionKey(state, now: now)
+        let hashes = scriptHashes
         let directory = self.directory
         let log = self.log
         let task = Task.detached(priority: .userInitiated) {
             Self.performResolve(selection: selection, bindings: snapshotBindings, directory: directory, log: log)
         }
-        resolveTask = task
+        resolveTaskSequence += 1
+        let inFlight = InFlightResolve(
+            id: resolveTaskSequence,
+            selectionEpoch: selectionEpoch,
+            selectionKey: key,
+            scriptHashes: hashes,
+            bindings: snapshotBindings,
+            task: task
+        )
+        resolveTask = inFlight
         let outcome = await task.value
-        resolveTask = nil
+        clearResolveTask(inFlight)
+        guard resolveIsCurrent(inFlight, outcome: outcome) else {
+            log.info("discarded a resolve that no longer matches the current route")
+            return nil
+        }
         apply(outcome)
         return outcome
+    }
+
+    /// Only clears the task this caller joined. Another request may already
+    /// have started a fresh resolve after this one was discarded.
+    private func clearResolveTask(_ inFlight: InFlightResolve) {
+        if resolveTask?.id == inFlight.id {
+            resolveTask = nil
+        }
+    }
+
+    /// The outcome is only usable when it still describes the live route:
+    /// same selection (no A → B → A), no script edit, and the resolved entry
+    /// still exists, is usable, and still has the definition that produced the
+    /// endpoint. Anything else fails closed; the next request re-resolves.
+    private func resolveIsCurrent(_ inFlight: InFlightResolve, outcome: ResolveOutcome) -> Bool {
+        guard let state = loadState() else { return false }
+        guard selectionEpoch == inFlight.selectionEpoch else { return false }
+        let now = Date().timeIntervalSince1970
+        guard selectionKey(state, now: now) == inFlight.selectionKey else { return false }
+        guard case .success(let resolved, let isNewBinding) = outcome.kind else { return true }
+        if isNewBinding, bindings != inFlight.bindings { return false }
+        guard let entry = state.proxies.first(where: { $0.id == resolved.entryID }),
+              entry.enabled,
+              entry.hasValidDefinition,
+              !entry.isFreeUsageLimited(at: now) else { return false }
+        if state.mode == .auto {
+            let eligible = stateForSelection(state).autoEligibleProxies(at: now)
+            guard eligible.contains(where: { $0.id == entry.id }) else { return false }
+        }
+        if entry.script != nil {
+            return scriptHashes[entry.id] == inFlight.scriptHashes[entry.id]
+        }
+        return resolved.url == entry.url
     }
 
     private static func performResolve(

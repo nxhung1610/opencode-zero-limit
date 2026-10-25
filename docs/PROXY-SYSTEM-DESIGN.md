@@ -102,6 +102,10 @@ by Edge instead of at spawn time.
 
 - Per **new** connection: if mode is Off → forward direct; if the current upstream is missing,
   expired, or suspect → resolve (single-flight, deduped) via the entry’s script or static URL.
+- **In-flight resolves are route-bound:** the result is applied only when the selection, the
+  entry’s definition/script, and the sticky bindings it started with are still current. A
+  selection switch or script edit while the script runs discards the old result; the next
+  request re-resolves, so an old lookup can never overwrite or be served for the new route.
 - **Warm-up:** Edge resolves eagerly at startup and on mode/selection changes, so most terminal
   launches already have an upstream; the launcher’s routing line reports it (or says plainly that
   the first request will resolve).

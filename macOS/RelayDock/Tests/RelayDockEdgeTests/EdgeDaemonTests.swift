@@ -459,6 +459,83 @@ struct EdgeDaemonTests {
         #expect(selected.entryID == healthy.id)
     }
 
+    /// A resolve started for one manual selection must not be served to a
+    /// request that has already switched to another selection. Both the joiner
+    /// and the creator discard the stale outcome; the next request resolves the
+    /// new entry from scratch.
+    @Test func switchingSelectionWhileAScriptResolvesNeverServesTheOldEndpoint() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(name: "Slow", script: """
+        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        return 'http://slow.example:8080';
+        """)
+        let slowEntry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: slowEntry.id) }
+        let imported = try store.importProxies("http://fast.example:9090")
+        let fastEntry = try #require(imported.proxies.first { $0.url == "http://fast.example:9090" })
+        _ = try store.setMode(.manual, manualId: slowEntry.id)
+
+        let first = Task { await daemon.decideRoute() }
+        // The script keeps the detached resolve busy while the selection moves.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        _ = try store.setMode(.manual, manualId: fastEntry.id)
+
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("the joining request must discard a resolve started for the old selection")
+            return
+        }
+        if case .upstream(let stale) = await first.value {
+            Issue.record("the creator must not serve the old selection's endpoint \(stale.url)")
+        }
+        #expect(await daemon.status().upstream == nil, "a stale resolve must not be applied")
+
+        guard case .upstream(let fresh) = await daemon.decideRoute() else {
+            Issue.record("the next request should resolve the new selection")
+            return
+        }
+        #expect(fresh.entryID == fastEntry.id)
+        #expect(fresh.url == "http://fast.example:9090")
+    }
+
+    /// Editing the selected script while its old version is resolving must not
+    /// leak the old endpoint into the edited entry's route.
+    @Test func editingTheSelectedScriptWhileResolvingNeverServesTheOldEndpoint() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(name: "Rotating", script: """
+        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        return 'http://old.example:8080';
+        """)
+        let entry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.manual, manualId: entry.id)
+
+        let first = Task { await daemon.decideRoute() }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        _ = try store.updateProxyScript(
+            id: entry.id,
+            name: "Rotating",
+            script: "return 'http://new.example:8080';"
+        )
+
+        guard case .refuse = await daemon.decideRoute() else {
+            Issue.record("the joining request must discard a resolve started for the old script")
+            return
+        }
+        if case .upstream(let stale) = await first.value {
+            Issue.record("the creator must not serve the edited script's old endpoint \(stale.url)")
+        }
+        #expect(await daemon.status().upstream == nil, "an edited script's old resolve must not be applied")
+
+        guard case .upstream(let fresh) = await daemon.decideRoute() else {
+            Issue.record("the edited script should resolve on the next request")
+            return
+        }
+        #expect(fresh.entryID == entry.id)
+        #expect(fresh.url == "http://new.example:8080")
+    }
+
     @Test func manualTransientFailureKeepsTheSameEntry() async throws {
         let (directory, store, daemon) = try makeManualFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
