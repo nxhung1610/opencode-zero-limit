@@ -33,7 +33,6 @@ enum OpenCodeFreeUsageProbe {
     private static let modelListTimeout: TimeInterval = 20
     private static let requestTimeout: TimeInterval = 45
     private static let prompt = "Reply with only OK."
-    private static let defaultCooldownMs: Double = 24 * 60 * 60 * 1_000
     private static let maximumCooldownMs: Double = 7 * 24 * 60 * 60 * 1_000
 
     static func findFreeModel(
@@ -148,7 +147,10 @@ enum OpenCodeFreeUsageProbe {
             )
             let applied = FreeUsageLimitStore(configDirectory: bridge.configDirectory).applying(to: state, now: now)
             if let resetAt = applied.proxies.first?.freeUsageLimitedUntil, resetAt > now {
-                return boundedCooldown((resetAt - now) * 1_000)
+                return boundedCooldown(
+                    (resetAt - now) * 1_000,
+                    fallback: defaultCooldownMilliseconds(nowMilliseconds: now * 1_000)
+                )
             }
             guard Date() < deadline else { break }
             do {
@@ -170,7 +172,10 @@ enum OpenCodeFreeUsageProbe {
                 || lowercased.contains("free usage limit reached") else { return nil }
 
         let structured = structuredCooldown(in: output, nowMilliseconds: nowMilliseconds)
-        return boundedCooldown(structured ?? defaultCooldownMs)
+        return boundedCooldown(
+            structured,
+            fallback: defaultCooldownMilliseconds(nowMilliseconds: nowMilliseconds)
+        )
     }
 
     private static func structuredCooldown(in output: String, nowMilliseconds: Double) -> Double? {
@@ -236,8 +241,21 @@ enum OpenCodeFreeUsageProbe {
         return formatter.date(from: string).map { $0.timeIntervalSince1970 * 1_000 }
     }
 
-    private static func boundedCooldown(_ milliseconds: Double) -> Double {
-        guard milliseconds.isFinite, milliseconds > 0 else { return defaultCooldownMs }
+    /// OpenCode's free-usage counters reset at 00:00 UTC. When the provider
+    /// omits an explicit retry window, wait only until the next UTC midnight
+    /// rather than quarantining the proxy for a full 24 hours from now.
+    static func defaultCooldownMilliseconds(nowMilliseconds: Double) -> Double {
+        let day: Double = 86_400_000
+        guard nowMilliseconds.isFinite else { return day }
+        let remainder = nowMilliseconds.truncatingRemainder(dividingBy: day)
+        let normalized = remainder < 0 ? remainder + day : remainder
+        return normalized == 0 ? day : day - normalized
+    }
+
+    private static func boundedCooldown(_ milliseconds: Double?, fallback: Double) -> Double {
+        guard let milliseconds, milliseconds.isFinite else {
+            return min(max(fallback, 1_000), maximumCooldownMs)
+        }
         return min(max(milliseconds, 1_000), maximumCooldownMs)
     }
 
