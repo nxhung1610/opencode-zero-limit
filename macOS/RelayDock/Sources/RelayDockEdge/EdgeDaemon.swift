@@ -155,6 +155,12 @@ actor EdgeDaemon {
     private var lastAutoFailureAt: [String: Double] = [:]
     private var resolveTask: InFlightResolve?
     private var resolveTaskSequence = 0
+    /// Test seam: true while a detached selection or Auto resolve is
+    /// registered. Tests use this to change the route while the old resolve is
+    /// genuinely in flight instead of racing a fixed sleep.
+    var hasInFlightResolve: Bool {
+        resolveTask != nil || !autoResolveTasks.isEmpty
+    }
     /// Bumped whenever a selection or a script changes. `selectionKey` alone is
     /// not enough: a switch away and back (A → B → A) would otherwise let a
     /// resolve started for the first A apply after the second A is selected.

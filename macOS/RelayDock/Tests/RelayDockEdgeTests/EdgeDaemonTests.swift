@@ -30,6 +30,20 @@ struct EdgeDaemonTests {
         )
     }
 
+    /// Waits until the daemon has actually registered its detached script
+    /// resolve. A fixed sleep races the CI scheduler: the resolve may start
+    /// after the test has already changed the selection.
+    private func waitForResolveToStart(on daemon: EdgeDaemon) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await !daemon.hasInFlightResolve {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("the script resolve did not start within five seconds")
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     @Test func freeUsageLimitReportUsesFreshSameProcessTunnelAndEdgePort() {
         let now = 2_000.0
         let result = EdgeDaemon.matchingTunnel(
@@ -995,7 +1009,7 @@ struct EdgeDaemonTests {
         let (directory, store, daemon) = try makeManualFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let added = try store.addProxyScript(name: "Slow", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
         return 'http://slow.example:8080';
         """)
         let slowEntry = added.proxies[0]
@@ -1006,7 +1020,7 @@ struct EdgeDaemonTests {
 
         let first = Task { await daemon.decideRoute() }
         // The script keeps the detached resolve busy while the selection moves.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitForResolveToStart(on: daemon)
         _ = try store.setMode(.manual, manualId: fastEntry.id)
 
         guard case .refuse = await daemon.decideRoute() else {
@@ -1032,7 +1046,7 @@ struct EdgeDaemonTests {
         let (directory, store, daemon) = try makeManualFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let added = try store.addProxyScript(name: "Rotating", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
         return 'http://old.example:8080';
         """)
         let entry = added.proxies[0]
@@ -1040,7 +1054,7 @@ struct EdgeDaemonTests {
         _ = try store.setMode(.manual, manualId: entry.id)
 
         let first = Task { await daemon.decideRoute() }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitForResolveToStart(on: daemon)
         _ = try store.updateProxyScript(
             id: entry.id,
             name: "Rotating",
@@ -1070,7 +1084,7 @@ struct EdgeDaemonTests {
         let (directory, store, daemon) = try makeManualFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let added = try store.addProxyScript(name: "Auto rotating", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
         return 'http://old.example:8080';
         """)
         let entry = added.proxies[0]
@@ -1078,7 +1092,7 @@ struct EdgeDaemonTests {
         _ = try store.setMode(.auto, manualId: nil)
 
         let first = Task { await daemon.decideRoute() }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitForResolveToStart(on: daemon)
         _ = try store.updateProxyScript(
             id: entry.id,
             name: "Auto rotating",
