@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release receives security fixes. The current release is **0.4.8**.
+Only the latest release receives security fixes. The current release is **0.4.9**.
 
 | Version | Supported |
 | --- | --- |
