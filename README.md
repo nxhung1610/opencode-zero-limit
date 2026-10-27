@@ -139,7 +139,7 @@ Manual and Auto stay fail-closed: when no upstream is usable, the first CONNECT 
 - Health-checks the active upstream every 10 minutes; failed entries retry after 5/15/60 minutes, and other entries only via **Test All**.
 - Turns an OpenCode `FreeUsageLimitError` into a pause for the proxy that delivered it and, on OpenCode 2.x, a bounded automatic retry through another eligible proxy (at most three requests in total: the original plus two retries). Manual borrows the rest of the pool for the pause; pinned listeners never fail over.
 - Serves any local client on `127.0.0.1` without authentication. `GET /__relaydock/status` is read-only; `GET/POST /__relaydock/check` and `POST /__relaydock/shutdown` are unauthenticated too.
-- The wrapper sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (and lowercase) to `http://127.0.0.1:<port>`, merges `NO_PROXY=localhost,127.0.0.1`, removes `OPENCODE_SERVER_PASSWORD` and `OPENCODE_SERVER_USERNAME`, and fails closed if Edge is unreachable.
+- The wrapper sets `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (and lowercase) to `http://127.0.0.1:<port>`, replaces `NO_PROXY` with loopback-only `localhost,127.0.0.1` so an inherited bypass rule cannot send provider traffic around Edge, removes `OPENCODE_SERVER_PASSWORD` and `OPENCODE_SERVER_USERNAME`, and fails closed if Edge is unreachable.
 
 ## Updates
 
