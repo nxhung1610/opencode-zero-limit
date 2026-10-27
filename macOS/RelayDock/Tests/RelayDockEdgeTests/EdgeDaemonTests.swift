@@ -30,17 +30,25 @@ struct EdgeDaemonTests {
         )
     }
 
-    /// Waits until the daemon has actually registered its detached script
-    /// resolve. A fixed sleep races the CI scheduler: the resolve may start
-    /// after the test has already changed the selection.
-    private func waitForResolveToStart(on daemon: EdgeDaemon) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await !daemon.hasInFlightResolve {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("the script resolve did not start within five seconds")
-                return
+    /// Waits for the daemon to report that its detached script resolve has
+    /// started. The event is buffered and cannot be missed, and waiting does
+    /// not compete with the resolve task for the cooperative pool.
+    private func waitForResolveToStart(_ stream: AsyncStream<Void>) async {
+        let started = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = stream.makeAsyncIterator()
+                return await iterator.next() != nil
             }
-            try await Task.sleep(nanoseconds: 10_000_000)
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                return false
+            }
+            let started = await group.next() ?? false
+            group.cancelAll()
+            return started
+        }
+        if !started {
+            Issue.record("the script resolve did not start within five seconds")
         }
     }
 
@@ -901,7 +909,9 @@ struct EdgeDaemonTests {
 
     // MARK: - Manual fail-closed
 
-    private func makeManualFixture() throws -> (directory: URL, store: ProxyStore, daemon: EdgeDaemon) {
+    private func makeManualFixture(
+        resolveGate: (@Sendable () async -> Void)? = nil
+    ) throws -> (directory: URL, store: ProxyStore, daemon: EdgeDaemon) {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-manual-fail-closed-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -909,7 +919,8 @@ struct EdgeDaemonTests {
         let daemon = EdgeDaemon(
             config: EdgeConfigFile(port: 57_999),
             directory: directory,
-            log: EdgeLog(url: directory.appending(path: "edge.log"))
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            resolveGate: resolveGate
         )
         return (directory, store, daemon)
     }
@@ -1001,17 +1012,15 @@ struct EdgeDaemonTests {
         #expect(selected.entryID == healthy.id)
     }
 
-    /// A resolve started for one manual selection must not be served to a
-    /// request that has already switched to another selection. Both the joiner
-    /// and the creator discard the stale outcome; the next request resolves the
-    /// new entry from scratch.
+    /// A resolve started for one manual selection must never be applied or
+    /// served after the request has already switched to another selection. A
+    /// request arriving after the stale resolve is cleared may resolve the new
+    /// entry, but the old endpoint must not leak through either path.
     @Test func switchingSelectionWhileAScriptResolvesNeverServesTheOldEndpoint() async throws {
-        let (directory, store, daemon) = try makeManualFixture()
+        let gate = ResolveGate()
+        let (directory, store, daemon) = try makeManualFixture(resolveGate: { await gate.hold() })
         defer { try? FileManager.default.removeItem(at: directory) }
-        let added = try store.addProxyScript(name: "Slow", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
-        return 'http://slow.example:8080';
-        """)
+        let added = try store.addProxyScript(name: "Slow", script: "return 'http://slow.example:8080';")
         let slowEntry = added.proxies[0]
         defer { removeProxyScriptCacheSnapshot(for: slowEntry.id) }
         let imported = try store.importProxies("http://fast.example:9090")
@@ -1019,18 +1028,24 @@ struct EdgeDaemonTests {
         _ = try store.setMode(.manual, manualId: slowEntry.id)
 
         let first = Task { await daemon.decideRoute() }
-        // The script keeps the detached resolve busy while the selection moves.
-        try await waitForResolveToStart(on: daemon)
+        // The gate keeps the detached resolve in flight while the selection moves.
+        await waitForResolveToStart(gate.entered)
         _ = try store.setMode(.manual, manualId: fastEntry.id)
 
-        guard case .refuse = await daemon.decideRoute() else {
-            Issue.record("the joining request must discard a resolve started for the old selection")
-            return
+        let joining = Task { await daemon.decideRoute() }
+        await Task.yield()
+        await gate.release()
+        if case .upstream(let joined) = await joining.value {
+            #expect(joined.entryID == fastEntry.id, "a joining request must never serve the old selection")
+            #expect(joined.url == "http://fast.example:9090")
         }
         if case .upstream(let stale) = await first.value {
             Issue.record("the creator must not serve the old selection's endpoint \(stale.url)")
         }
-        #expect(await daemon.status().upstream == nil, "a stale resolve must not be applied")
+        #expect(
+            await daemon.status().upstream?.entryID != slowEntry.id,
+            "a stale resolve must not be applied"
+        )
 
         guard case .upstream(let fresh) = await daemon.decideRoute() else {
             Issue.record("the next request should resolve the new selection")
@@ -1043,32 +1058,38 @@ struct EdgeDaemonTests {
     /// Editing the selected script while its old version is resolving must not
     /// leak the old endpoint into the edited entry's route.
     @Test func editingTheSelectedScriptWhileResolvingNeverServesTheOldEndpoint() async throws {
-        let (directory, store, daemon) = try makeManualFixture()
+        let gate = ResolveGate()
+        let (directory, store, daemon) = try makeManualFixture(resolveGate: { await gate.hold() })
         defer { try? FileManager.default.removeItem(at: directory) }
-        let added = try store.addProxyScript(name: "Rotating", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
-        return 'http://old.example:8080';
-        """)
+        let added = try store.addProxyScript(name: "Rotating", script: "return 'http://old.example:8080';")
         let entry = added.proxies[0]
         defer { removeProxyScriptCacheSnapshot(for: entry.id) }
         _ = try store.setMode(.manual, manualId: entry.id)
 
         let first = Task { await daemon.decideRoute() }
-        try await waitForResolveToStart(on: daemon)
+        await waitForResolveToStart(gate.entered)
         _ = try store.updateProxyScript(
             id: entry.id,
             name: "Rotating",
             script: "return 'http://new.example:8080';"
         )
 
-        guard case .refuse = await daemon.decideRoute() else {
-            Issue.record("the joining request must discard a resolve started for the old script")
-            return
+        let joining = Task { await daemon.decideRoute() }
+        await Task.yield()
+        await gate.release()
+        // A joiner may arrive while the stale resolve is still in flight (and
+        // discard it) or after it cleared (and resolve the new script). Either
+        // way it must never serve the old endpoint.
+        if case .upstream(let joined) = await joining.value {
+            #expect(joined.url == "http://new.example:8080", "a joining request must never serve the old script")
         }
         if case .upstream(let stale) = await first.value {
             Issue.record("the creator must not serve the edited script's old endpoint \(stale.url)")
         }
-        #expect(await daemon.status().upstream == nil, "an edited script's old resolve must not be applied")
+        #expect(
+            await daemon.status().upstream?.maskedURL != "http://old.example:8080",
+            "an edited script's old resolve must not be applied"
+        )
 
         guard case .upstream(let fresh) = await daemon.decideRoute() else {
             Issue.record("the edited script should resolve on the next request")
@@ -1081,32 +1102,38 @@ struct EdgeDaemonTests {
     /// Auto caches per-entry resolves too. Editing a script while that entry is
     /// resolving must not put the old script's endpoint back into the pool.
     @Test func editingAnAutoScriptWhileResolvingNeverServesTheOldEndpoint() async throws {
-        let (directory, store, daemon) = try makeManualFixture()
+        let gate = ResolveGate()
+        let (directory, store, daemon) = try makeManualFixture(resolveGate: { await gate.hold() })
         defer { try? FileManager.default.removeItem(at: directory) }
-        let added = try store.addProxyScript(name: "Auto rotating", script: """
-        await new Promise(function (resolve) { setTimeout(resolve, 3000); });
-        return 'http://old.example:8080';
-        """)
+        let added = try store.addProxyScript(name: "Auto rotating", script: "return 'http://old.example:8080';")
         let entry = added.proxies[0]
         defer { removeProxyScriptCacheSnapshot(for: entry.id) }
         _ = try store.setMode(.auto, manualId: nil)
 
         let first = Task { await daemon.decideRoute() }
-        try await waitForResolveToStart(on: daemon)
+        await waitForResolveToStart(gate.entered)
         _ = try store.updateProxyScript(
             id: entry.id,
             name: "Auto rotating",
             script: "return 'http://new.example:8080';"
         )
 
-        guard case .refuse = await daemon.decideRoute() else {
-            Issue.record("Auto must discard a resolve started for the old script")
-            return
+        let joining = Task { await daemon.decideRoute() }
+        await Task.yield()
+        await gate.release()
+        // A joiner may arrive while the stale resolve is still in flight (and
+        // discard it) or after it cleared (and resolve the new script). Either
+        // way it must never serve the old endpoint.
+        if case .upstream(let joined) = await joining.value {
+            #expect(joined.url == "http://new.example:8080", "Auto must never serve the old script")
         }
         if case .upstream(let stale) = await first.value {
             Issue.record("Auto must not serve the edited script's old endpoint \(stale.url)")
         }
-        #expect(await daemon.status().upstream == nil, "a stale Auto resolve must not be applied")
+        #expect(
+            await daemon.status().upstream?.maskedURL != "http://old.example:8080",
+            "a stale Auto resolve must not be applied"
+        )
 
         guard case .upstream(let fresh) = await daemon.decideRoute() else {
             Issue.record("Auto should resolve the edited script on the next request")
@@ -1275,5 +1302,32 @@ struct EdgeDaemonTests {
 
         let status = await daemon.status()
         #expect(status.counters.directFallbacks == 2)
+    }
+}
+
+/// Holds the first detached resolve until the test has changed the route.
+/// `hold` is the daemon's one-shot gate; `entered` reports that a resolve is
+/// waiting without polling or a timer, and later resolves pass through.
+private actor ResolveGate {
+    nonisolated let entered: AsyncStream<Void>
+    private let enteredContinuation: AsyncStream<Void>.Continuation
+    private var released = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init() {
+        (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+    }
+
+    func hold() async {
+        enteredContinuation.yield(())
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 }

@@ -135,6 +135,11 @@ actor EdgeDaemon {
     /// inject a fixed OpenCode peer so the full report path can be exercised
     /// without a live libproc socket scan.
     private let peerResolver: (@Sendable (UInt16, UInt16) -> EdgePeerInfo?)?
+    /// Test seam: a one-shot gate the detached resolve passes through before
+    /// running the script. Tests hold it open to change the route while the
+    /// resolve is genuinely in flight, without depending on a timer or on CI
+    /// scheduling.
+    private let resolveGate: (@Sendable () async -> Void)?
     private let launchedAt = Date().timeIntervalSince1970
 
     private var cachedState: ProxyState?
@@ -155,12 +160,6 @@ actor EdgeDaemon {
     private var lastAutoFailureAt: [String: Double] = [:]
     private var resolveTask: InFlightResolve?
     private var resolveTaskSequence = 0
-    /// Test seam: true while a detached selection or Auto resolve is
-    /// registered. Tests use this to change the route while the old resolve is
-    /// genuinely in flight instead of racing a fixed sleep.
-    var hasInFlightResolve: Bool {
-        resolveTask != nil || !autoResolveTasks.isEmpty
-    }
     /// Bumped whenever a selection or a script changes. `selectionKey` alone is
     /// not enough: a switch away and back (A → B → A) would otherwise let a
     /// resolve started for the first A apply after the second A is selected.
@@ -210,13 +209,15 @@ actor EdgeDaemon {
         directory: URL,
         log: EdgeLog,
         listenerReport: EdgeListenerReport? = nil,
-        peerResolver: (@Sendable (UInt16, UInt16) -> EdgePeerInfo?)? = nil
+        peerResolver: (@Sendable (UInt16, UInt16) -> EdgePeerInfo?)? = nil,
+        resolveGate: (@Sendable () async -> Void)? = nil
     ) {
         self.config = config
         self.directory = directory
         self.log = log
         self.listenerReport = listenerReport
         self.peerResolver = peerResolver
+        self.resolveGate = resolveGate
     }
 
     // MARK: - State file
@@ -579,8 +580,10 @@ actor EdgeDaemon {
         let placement = ProxyState(mode: .manual, manualId: entry.id, proxies: [entry])
         let directory = self.directory
         let log = self.log
+        let gate = resolveGate
         let task = Task.detached(priority: .userInitiated) {
-            Self.performResolve(selection: placement, bindings: [:], directory: directory, log: log)
+            await gate?()
+            return Self.performResolve(selection: placement, bindings: [:], directory: directory, log: log)
         }
         resolveTaskSequence += 1
         let inFlight = InFlightResolve(
@@ -1016,8 +1019,10 @@ actor EdgeDaemon {
         let hashes = scriptHashes
         let directory = self.directory
         let log = self.log
+        let gate = resolveGate
         let task = Task.detached(priority: .userInitiated) {
-            Self.performResolve(selection: selection, bindings: snapshotBindings, directory: directory, log: log)
+            await gate?()
+            return Self.performResolve(selection: selection, bindings: snapshotBindings, directory: directory, log: log)
         }
         resolveTaskSequence += 1
         let inFlight = InFlightResolve(
