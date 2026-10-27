@@ -328,6 +328,13 @@ actor EdgeDaemon {
             pinnedUpstreams[id] = nil
             pinnedErrors[id] = nil
             pinnedResolveGeneration[id, default: 0] += 1
+            // Health and scheduler state describe the endpoint the old script
+            // produced. Keeping a failed check would make Auto exclude the
+            // edited entry until the next scheduled check.
+            liveHealth[id] = nil
+            failureStreak[id] = nil
+            nextCheckAt[id] = nil
+            lastAutoFailureAt[id] = nil
             if state.mode == .manual, state.manualId == id {
                 // The cooldown belonged to the old script; the new one must
                 // get a chance to resolve on the next connection.
@@ -838,7 +845,10 @@ actor EdgeDaemon {
     }
 
     static func isOpenCodeProcessName(_ name: String) -> Bool {
-        name.caseInsensitiveCompare("opencode") == .orderedSame
+        // The npm-installed macOS binary is named `opencode.exe`; the shell
+        // wrapper and other builds use `opencode`.
+        let lower = name.lowercased()
+        return lower == "opencode" || lower == "opencode.exe"
     }
 
     /// How recently a tunnel must have delivered response bytes for a report
@@ -855,26 +865,35 @@ actor EdgeDaemon {
         recent: [TunnelRecord],
         now: Double
     ) -> TunnelMatch {
-        let candidates = (active + recent).filter { tunnel in
-            guard tunnel.peerPid == peerPID,
-                  tunnel.edgePort == edgePort,
-                  tunnel.entryID != nil,
-                  tunnel.startedAt <= now,
-                  let activity = tunnel.lastDownstreamAt,
-                  activity.isFinite,
-                  activity <= now,
-                  now - activity <= Self.freeUsageActivityWindow else { return false }
-            if tunnel.active { return true }
-            let endedAt = tunnel.endedAt ?? tunnel.startedAt
-            return endedAt <= now && now - endedAt <= Self.freeUsageActivityWindow
+        func candidates(in tunnels: [TunnelRecord]) -> [TunnelRecord] {
+            tunnels.filter { tunnel in
+                guard tunnel.peerPid == peerPID,
+                      tunnel.edgePort == edgePort,
+                      tunnel.entryID != nil,
+                      tunnel.startedAt <= now,
+                      let activity = tunnel.lastDownstreamAt,
+                      activity.isFinite,
+                      activity <= now,
+                      now - activity <= Self.freeUsageActivityWindow else { return false }
+                if tunnel.active { return true }
+                let endedAt = tunnel.endedAt ?? tunnel.startedAt
+                return endedAt <= now && now - endedAt <= Self.freeUsageActivityWindow
+            }
         }
-        guard let best = candidates.max(by: {
+
+        // The plugin reports while it is still reading the 429 body, so the
+        // tunnel that delivered it is normally active. A different request
+        // that finished moments earlier must not make that live tunnel look
+        // ambiguous; only another active response can.
+        let activeCandidates = candidates(in: active)
+        let pool = activeCandidates.isEmpty ? candidates(in: recent) : activeCandidates
+        guard let best = pool.max(by: {
             ($0.lastDownstreamAt ?? 0) < ($1.lastDownstreamAt ?? 0)
         }), let bestAt = best.lastDownstreamAt else { return .none }
 
         // A response from another entry within the ambiguity window could be
         // the one the plugin actually saw. Decline rather than guess.
-        let rivals = candidates.filter { candidate in
+        let rivals = pool.filter { candidate in
             guard candidate.entryID != best.entryID,
                   let activity = candidate.lastDownstreamAt else { return false }
             return bestAt - activity <= Self.freeUsageAmbiguityWindow

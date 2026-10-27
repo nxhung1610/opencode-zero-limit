@@ -18,8 +18,19 @@ struct OpenCodeRoutingProbeTests {
     }
 
     @Test func noProxyWildcardOutranksAnOtherwiseCorrectEnvironment() {
-        let environment = buildOpenCodeProxyEnvironment(proxyURL: config.proxyURL, base: ["no_proxy": "*"])
+        var environment = buildOpenCodeProxyEnvironment(proxyURL: config.proxyURL, base: ["no_proxy": "*"])
+        // The builder drops inherited bypass rules; a process that still has
+        // one (launched outside the wrapper) must be reported.
+        environment["no_proxy"] = "*"
         #expect(OpenCodeRoutingProbe.assess(environment: environment, edgeConfig: config) == .bypassAll)
+    }
+
+    @Test func builderDropsInheritedBypassRules() {
+        let environment = buildOpenCodeProxyEnvironment(
+            proxyURL: config.proxyURL,
+            base: ["NO_PROXY": "*", "no_proxy": "internal.example"]
+        )
+        #expect(OpenCodeRoutingProbe.assess(environment: environment, edgeConfig: config) == .edgeEnvironment)
     }
 
     @Test func missingConfigOrArbitraryBypassRulesStayUnverified() {

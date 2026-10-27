@@ -481,10 +481,17 @@ final class EdgeClientConnection: @unchecked Sendable {
                             state.record(.clientClosed)
                             forwardedHalfClose = true
                             tunnel.socket.halfCloseWrite()
-                            state.armHalfCloseWatchdog(
-                                for: tunnel.socket,
-                                timeout: halfCloseFirstByteTimeout
-                            )
+                            let elapsed = Date().timeIntervalSince1970 - startedAt
+                            if elapsed >= halfCloseFirstByteTimeout {
+                                // The client already waited a full silent
+                                // window; do not grant the upstream another.
+                                state.cancelUpstreamIfStillSilent(tunnel.socket)
+                            } else {
+                                state.armHalfCloseWatchdog(
+                                    for: tunnel.socket,
+                                    timeout: halfCloseFirstByteTimeout
+                                )
+                            }
                             break
                         }
                     }
@@ -716,6 +723,16 @@ private final class EdgeRelayState: @unchecked Sendable {
         watchdog = nil
         lock.unlock()
         task?.cancel()
+    }
+
+    /// The client gave up after a full silent window. Cancel the upstream so
+    /// the relay can classify the stall now instead of granting a second
+    /// watchdog window. A response byte that already arrived wins.
+    func cancelUpstreamIfStillSilent(_ upstream: EdgeSocket) {
+        lock.lock()
+        let silent = !upstreamFinished && downstreamBytes == 0
+        lock.unlock()
+        if silent { upstream.cancel() }
     }
 
     /// After a client half-close, wait for the upstream's first response byte.

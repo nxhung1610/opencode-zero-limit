@@ -3,7 +3,7 @@ import Testing
 @testable import RelayDockCore
 
 struct OpenCodeProxyEnvironmentTests {
-    @Test func explicitOffRemovesInheritedProxyAndPreservesLocalNoProxy() {
+    @Test func explicitOffRemovesInheritedProxyAndDropsInheritedBypass() {
         let base = [
             "HTTP_PROXY": "http://inherited.example:8080",
             "HTTPS_PROXY": "http://inherited.example:8080",
@@ -17,10 +17,27 @@ struct OpenCodeProxyEnvironmentTests {
 
         #expect(direct["HTTP_PROXY"] == nil)
         #expect(direct["HTTPS_PROXY"] == nil)
-        #expect(direct["NO_PROXY"] == "localhost,example.test,127.0.0.1")
-        #expect(direct["no_proxy"] == "internal.example,localhost,127.0.0.1")
+        #expect(direct["NO_PROXY"] == "localhost,127.0.0.1")
+        #expect(direct["no_proxy"] == "localhost,127.0.0.1")
         #expect(direct["OPENCODE_SERVER_PASSWORD"] == nil)
         #expect(direct["OPENCODE_SERVER_USERNAME"] == nil)
+    }
+
+    @Test func inheritedWildcardAndNonLocalBypassEntriesAreDropped() {
+        let base = [
+            "NO_PROXY": "*,internal.example,localhost,127.0.0.1,::1",
+            "no_proxy": "api.example.com,localhost:8080",
+        ]
+
+        let environment = buildOpenCodeProxyEnvironment(
+            proxyURL: "http://127.0.0.1:57211",
+            base: base
+        )
+
+        #expect(environment["NO_PROXY"] == "localhost,127.0.0.1")
+        #expect(environment["no_proxy"] == "localhost,127.0.0.1")
+        let config = EdgeConfigFile(port: 57_211)
+        #expect(OpenCodeRoutingProbe.assess(environment: environment, edgeConfig: config) == .edgeEnvironment)
     }
 
     @Test func selectedProxyOverridesEveryInheritedProxyVariable() {

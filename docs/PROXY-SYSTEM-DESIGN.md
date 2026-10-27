@@ -29,7 +29,7 @@ PATH wrapper, and how OpenCode processes (CLI/TUI and the background service) re
 ## 1. Why the current model needs a redesign
 
 The current model resolves one proxy URL per launch and injects it as environment variables
-(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` + lowercase, merged `NO_PROXY`). Every fact below was
+(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` + lowercase, loopback-only `NO_PROXY`). Every fact below was
 observed on a real machine, not hypothesized.
 
 | # | Observed problem | Evidence |
@@ -184,6 +184,8 @@ by Edge instead of at spawn time.
   env is the constant `http://127.0.0.1:<port>` (no userinfo). The same binary (opencode v2.0.30,
   Bun) honors `NO_PROXY` for `localhost`/`127.0.0.1`, so CLI↔service loopback traffic bypasses
   Edge (verified in the Docker E2E; a control run without `NO_PROXY` was routed through the proxy).
+  The wrapper replaces, rather than merges, `NO_PROXY`: an inherited non-loopback entry (including
+  `*`) would otherwise let provider traffic bypass Edge and remain invisible to accounting.
 - `GET http://127.0.0.1:<port>/__relaydock/status` → JSON: mode, upstream (label, masked URL,
   source, resolved/expires at), rotation counters, backoff state, last errors, and active/recent
   tunnels with **peer-process attribution** via a libproc fd scan (same-user only, on demand,

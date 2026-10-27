@@ -316,6 +316,42 @@ struct EdgeDaemonTests {
         #expect(match.entryID == "px_a")
     }
 
+    @Test func freeUsageLimitReportPrefersAnActiveResponseOverARecentlyEndedOne() {
+        let now = 1_000.0
+        let result = EdgeDaemon.matchingTunnel(
+            peerPID: 123,
+            edgePort: 57_211,
+            active: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_a",
+                    startedAt: now - 0.8,
+                    active: true,
+                    lastDownstreamAt: now - 0.5,
+                    clientPort: 40_001
+                ),
+            ],
+            recent: [
+                tunnelRecord(
+                    pid: 123,
+                    entryID: "px_b",
+                    startedAt: now - 30,
+                    endedAt: now - 0.4,
+                    active: false,
+                    lastDownstreamAt: now - 0.4,
+                    clientPort: 40_002
+                ),
+            ],
+            now: now
+        )
+
+        guard case .matched(let match) = result else {
+            Issue.record("a live tunnel still delivering the 429 outranks a finished request")
+            return
+        }
+        #expect(match.entryID == "px_a")
+    }
+
     @Test func freeUsageLimitCooldownPersistsAndAutoSkipsThatProxy() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "relaydock-free-limit-route-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -490,8 +526,11 @@ struct EdgeDaemonTests {
 
     @Test func explicitFreeUsageReportsOnlyAcceptAnOpenCodeReporter() {
         #expect(EdgeDaemon.isOpenCodeProcessName("opencode"))
+        #expect(EdgeDaemon.isOpenCodeProcessName("opencode.exe"))
+        #expect(EdgeDaemon.isOpenCodeProcessName("OpenCode.EXE"))
         #expect(!EdgeDaemon.isOpenCodeProcessName("curl"))
         #expect(!EdgeDaemon.isOpenCodeProcessName("node"))
+        #expect(!EdgeDaemon.isOpenCodeProcessName("opencode-helper"))
     }
 
     @Test func manualAndPinnedRoutesRefuseAProxyDuringItsFreeLimitCooldown() async throws {
@@ -1137,6 +1176,40 @@ struct EdgeDaemonTests {
 
         guard case .upstream(let fresh) = await daemon.decideRoute() else {
             Issue.record("Auto should resolve the edited script on the next request")
+            return
+        }
+        #expect(fresh.entryID == entry.id)
+        #expect(fresh.url == "http://new.example:8080")
+    }
+
+    /// A failed health check describes the endpoint the old script produced.
+    /// Editing the script must clear it, or Auto keeps excluding the entry
+    /// until the next scheduled check.
+    @Test func editingAnAutoScriptClearsItsFailedLiveHealth() async throws {
+        let (directory, store, daemon) = try makeManualFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let added = try store.addProxyScript(name: "Unreachable", script: "return 'http://127.0.0.1:9';")
+        let entry = added.proxies[0]
+        defer { removeProxyScriptCacheSnapshot(for: entry.id) }
+        _ = try store.setMode(.auto, manualId: nil)
+
+        guard case .upstream = await daemon.decideRoute() else {
+            Issue.record("the unreachable script should still resolve")
+            return
+        }
+        let outcomes = await daemon.runChecks(scope: .all)
+        if case .failed = outcomes[entry.id] {} else {
+            Issue.record("the closed probe port must fail its check")
+        }
+
+        _ = try store.updateProxyScript(
+            id: entry.id,
+            name: "Unreachable",
+            script: "return 'http://new.example:8080';"
+        )
+
+        guard case .upstream(let fresh) = await daemon.decideRoute() else {
+            Issue.record("an edited script must not inherit the old script's failed health")
             return
         }
         #expect(fresh.entryID == entry.id)

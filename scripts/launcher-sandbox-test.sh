@@ -249,6 +249,8 @@ run_launcher() {
   OPENCODE_SERVER_PASSWORD="should-not-leak" \
   RELAYDOCK_QUIET="${RELAYDOCK_QUIET:-}" \
   RELAYDOCK_CONFIG_DIR="$CONFIG" \
+  NO_PROXY="internal.example,localhost" \
+  no_proxy="api.example.com" \
   PATH="$LINK_DIRECTORY:$STUB_DIRECTORY:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$LINK_DIRECTORY/opencode" "$@" > "$WORK/stdout" 2> "$WORK/stderr"
 }
@@ -269,6 +271,8 @@ check "stub reached the proxy successfully" grep -q "^200$" "$RECORD.proxy"
 check "HTTP_PROXY is the constant Edge carrier URL" grep -qx "HTTP_PROXY=http://127.0.0.1:$EDGE_PORT" "$RECORD.env"
 check "ALL_PROXY carries the same constant URL" grep -qx "ALL_PROXY=http://127.0.0.1:$EDGE_PORT" "$RECORD.env"
 check "NO_PROXY covers localhost" grep -qE "^NO_PROXY=.*127\.0\.0\.1" "$RECORD.env"
+check "NO_PROXY drops inherited non-local bypass" bash -c "! grep -qE '^NO_PROXY=.*(internal\.example|api\.example\.com)' '$RECORD.env'"
+check "lowercase no_proxy is loopback-only" grep -qx "no_proxy=localhost,127.0.0.1" "$RECORD.env"
 check "Edge was spawned" test -n "$(edge_pid)"
 check "Edge resolved through the provider" test "$(provider_count)" -ge 1
 check "stub traffic went through proxy A" grep -q "relaydock.test" "$PROXY_LOG_A"
