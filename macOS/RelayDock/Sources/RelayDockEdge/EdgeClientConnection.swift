@@ -94,15 +94,22 @@ final class EdgeClientConnection: @unchecked Sendable {
                 try await sendSimple(status: 400, reason: "Bad Request", body: "retryAfterMs is required.")
                 return
             }
+            let retryRequested = query["retry"] == "1"
             let result = await daemon.reportFreeUsageLimit(
                 retryAfterMs: retryAfterMs,
                 reportClientPort: clientPort,
                 edgePort: edgePort,
-                explicitEntryID: query["entryID"]
+                explicitEntryID: query["entryID"],
+                retryRequested: retryRequested
             )
             switch result {
-            case .flagged(let entryID, _):
-                try await sendSimple(status: 200, reason: "OK", body: "Proxy \(entryID) paused until reset.")
+            case .flagged(let entryID, let retryAt, let rotate):
+                try await sendJSON(FreeUsageReportResponse(
+                    status: rotate ? "retrying" : "paused",
+                    entryID: entryID,
+                    retryAt: retryAt,
+                    rotate: rotate
+                ))
             case .unmatched:
                 try await sendSimple(
                     status: 409, reason: "Conflict",
@@ -426,7 +433,8 @@ final class EdgeClientConnection: @unchecked Sendable {
             clientPort: clientPort,
             edgePort: edgePort,
             entryID: upstreamEntryID,
-            label: label
+            label: label,
+            socket: socket
         )
         let startedAt = Date().timeIntervalSince1970
         let state = EdgeRelayState()
@@ -621,6 +629,16 @@ final class EdgeClientConnection: @unchecked Sendable {
         response.append(payload)
         try await socket.send(response)
     }
+}
+
+/// Admin response for a free-usage report. `rotate` tells the OpenCode plugin
+/// whether a retry will actually reach a different proxy; the plugin only
+/// retries when it is true, so an exhausted pool fails once instead of looping.
+private struct FreeUsageReportResponse: Encodable {
+    let status: String
+    let entryID: String
+    let retryAt: Double
+    let rotate: Bool
 }
 
 // MARK: - Relay outcome policy

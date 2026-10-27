@@ -31,7 +31,7 @@ final class EdgeLog: @unchecked Sendable {
 
     private func write(level: String, message: String, synchronous: Bool) {
         let timestamp = formatter.string(from: Date())
-        let emit = { [url] in
+        let emit: @Sendable () -> Void = { [url] in
             Self.rotateIfNeeded(url: url)
             let line = Data("\(timestamp) [\(level)] \(message)\n".utf8)
             if let handle = try? FileHandle(forWritingTo: url) {

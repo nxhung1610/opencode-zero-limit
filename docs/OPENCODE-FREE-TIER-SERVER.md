@@ -501,15 +501,27 @@ snapshot, not a contract.
 
 ### RelayDock behavior (implementation note)
 
-RelayDock does not try to evade the free lane. It treats a reported limit as account/network-wide
-and pauses only the proxy entry that actually carried the request.
+RelayDock does not try to evade the free lane. It pauses only the proxy entry that actually
+carried the request, then retries through another eligible pool entry when the user has one. It
+does not mint new identities, reset the counter, or change the provider's accounting.
 
 - **Cooldown:** the loopback OpenCode plugin forwards `FreeUsageLimitError` to Edge, which writes
   a deadline to `free-usage-limits.json`. A deadline never shortens an existing one.
+- **Retry:** on OpenCode 2.x the plugin turns the error into a bounded retry (at most three
+  attempts, 1.5 s apart) only after Edge has paused the delivering entry and confirmed another
+  eligible proxy. Edge closes the delivering tunnel first, so the retry cannot reuse the same
+  TLS session and exit. Manual mode borrows another entry only for the reported pause; a pinned
+  listener never does. An exhausted pool surfaces the error instead of looping.
 - **Reset time:** a structured `retryAfter` / `retryAfterMs` / `resetAtMs` from the provider wins.
   Without one, the fallback is the number of seconds until the next **00:00 UTC**, matching the
-  server behaviour in §3. A structured zero or past reset clamps to one second rather than
-  quarantining the proxy for a day.
+  server behaviour in §3. A structured zero or past reset is clamped to one second by the
+  reporter rather than quarantining the proxy for a day.
+- **Bounded inspection:** the plugin reads at most the first 64 KiB of a 429 body, so a huge error
+  page cannot make it buffer megabytes. Provider free-limit bodies are far smaller in practice.
+- **Install failure:** if the plugin should be installed but cannot be written, `relaydock-edge
+  install` still installs Edge and the wrapper, then exits non-zero so the app reports the error
+  instead of claiming success and offering the same update again. An unrelated user plugin with
+  the same filename is preserved and does not count as an update.
 - **Tunnel attribution:** a report is matched to the tunnel from the same OpenCode pid on the same
   Edge port that most recently delivered response bytes (within 120 seconds), not to the newest
   tunnel. If two different entries delivered bytes within two seconds of each other, the report is

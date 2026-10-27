@@ -94,7 +94,7 @@ struct EdgeInstaller {
             stderr("relaydock-edge: install failed: \(error.localizedDescription)")
             return 1
         }
-        installFreeUsagePlugin(nextTo: sourceEdge)
+        let pluginInstalled = installFreeUsagePlugin(nextTo: sourceEdge)
         switch EdgeMain.ensureInitialized(environment: environment) {
         case .kept(_, let config):
             stdout("edge.json already configured (port \(config.port)); keeping it.")
@@ -108,6 +108,10 @@ struct EdgeInstaller {
         stdout("Installed \(commandLink.path) -> \(installedLauncher.path)")
         stdout("Installed \(installedEdge.path)")
         reportPathOrder()
+        // Edge and the wrapper are installed either way, so a plugin failure
+        // does not strand the user; the non-zero exit makes the app surface
+        // the real error instead of claiming the upgrade succeeded.
+        guard pluginInstalled else { return 1 }
         stdout(Self.hintText)
         return 0
     }
@@ -197,30 +201,42 @@ struct EdgeInstaller {
 
     /// Installs only RelayDock's uniquely named plugin. Existing unrelated
     /// user plugins are never overwritten; updates replace only a file carrying
-    /// our ownership marker.
-    private func installFreeUsagePlugin(nextTo sourceEdge: URL) {
+    /// our ownership marker. Returns false only when the plugin should have
+    /// been installed but could not be written, so the caller can report a
+    /// failed upgrade instead of silently leaving the app showing "Update".
+    private func installFreeUsagePlugin(nextTo sourceEdge: URL) -> Bool {
         let source = sourceEdge.deletingLastPathComponent().appending(path: Self.freeUsagePluginFilename)
         guard let data = try? Data(contentsOf: source),
               let contents = String(data: data, encoding: .utf8),
               contents.hasPrefix(Self.freeUsagePluginMarker) else {
             stderr("Warning: the bundled OpenCode quota-monitor plugin is missing; automatic free-limit detection is unavailable.")
-            return
+            return true
         }
-        if FileManager.default.fileExists(atPath: freeUsagePlugin.path) {
-            guard let existing = try? String(contentsOf: freeUsagePlugin, encoding: .utf8),
-                  existing.hasPrefix(Self.freeUsagePluginMarker) else {
+        let manager = FileManager.default
+        if manager.fileExists(atPath: freeUsagePlugin.path) {
+            guard let existing = try? String(contentsOf: freeUsagePlugin, encoding: .utf8) else {
+                stderr("relaydock-edge: cannot inspect the existing OpenCode plugin at \(freeUsagePlugin.path); quota monitoring was not installed.")
+                return false
+            }
+            guard existing.hasPrefix(Self.freeUsagePluginMarker) else {
                 stderr("Warning: preserving unrelated OpenCode plugin at \(freeUsagePlugin.path); quota monitoring was not installed.")
-                return
+                return true
             }
         }
         do {
-            try FileManager.default.createDirectory(at: openCodePluginDirectory, withIntermediateDirectories: true)
+            try manager.createDirectory(at: openCodePluginDirectory, withIntermediateDirectories: true)
             try data.write(to: freeUsagePlugin, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: freeUsagePlugin.path)
-            stdout("Installed OpenCode free-usage limit monitor plugin.")
         } catch {
-            stderr("Warning: could not install the OpenCode quota-monitor plugin: \(error.localizedDescription)")
+            stderr("relaydock-edge: could not install the RelayDock OpenCode plugin at \(freeUsagePlugin.path): \(error.localizedDescription)")
+            return false
         }
+        do {
+            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: freeUsagePlugin.path)
+        } catch {
+            stderr("Warning: installed the RelayDock OpenCode plugin but could not restrict its permissions: \(error.localizedDescription)")
+        }
+        stdout("Installed OpenCode free-usage limit monitor plugin.")
+        return true
     }
 
     /// Removes only a plugin with RelayDock's marker, preserving any unrelated
@@ -239,9 +255,22 @@ struct EdgeInstaller {
     private func installFile(source: URL, destination: URL) throws {
         let manager = FileManager.default
         if source.standardizedFileURL == destination.standardizedFileURL { return }
-        try? manager.removeItem(at: destination)
-        try manager.copyItem(at: source, to: destination)
-        try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        // Copy beside the destination, then rename over it. A failed copy
+        // leaves the installed binary intact, and rename installs the new
+        // inode in one step — important because replacing an already-executed
+        // Mach-O in place can make macOS SIGKILL the next launch.
+        let temporary = destination.deletingLastPathComponent()
+            .appending(path: ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? manager.removeItem(at: temporary) }
+        try manager.copyItem(at: source, to: temporary)
+        try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporary.path)
+        guard rename(temporary.path, destination.path) == 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
+            )
+        }
     }
 
     private func isSymlink(_ url: URL) -> Bool {

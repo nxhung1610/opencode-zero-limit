@@ -66,15 +66,21 @@ if [[ -e "$OUTPUT" ]]; then
   fi
   mkdir -p "$OUTPUT/Contents/MacOS" "$OUTPUT/Contents/Resources"
   cp -f "$BUNDLE/Contents/Info.plist" "$OUTPUT/Contents/Info.plist"
-  cp -f "$BUNDLE/Contents/MacOS/RelayDock" "$OUTPUT/Contents/MacOS/RelayDock"
+  # The app binary may have been executed from this bundle. Install a fresh
+  # inode via a sibling temp file and rename, so a failed copy leaves the old
+  # binary in place instead of leaving none.
+  cp -f "$BUNDLE/Contents/MacOS/RelayDock" "$OUTPUT/Contents/MacOS/RelayDock.tmp"
+  mv -f "$OUTPUT/Contents/MacOS/RelayDock.tmp" "$OUTPUT/Contents/MacOS/RelayDock"
   cp -f "$BUNDLE/Contents/Resources/AppIcon.icns" "$OUTPUT/Contents/Resources/AppIcon.icns"
   mkdir -p "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
   ditto "$BUNDLE/Contents/Resources/$RESOURCE_BUNDLE" "$OUTPUT/Contents/Resources/$RESOURCE_BUNDLE"
   # Fresh inode for the wrapper pair (see above): the app may have run the
-  # copies already installed in this bundle.
-  rm -f "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
-  cp "$BUNDLE/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-launch"
-  cp "$BUNDLE/Contents/Resources/relaydock-edge" "$OUTPUT/Contents/Resources/relaydock-edge"
+  # copies already installed in this bundle. Temp+rename keeps the old binary
+  # until the new copy succeeds.
+  cp "$BUNDLE/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-launch.tmp"
+  cp "$BUNDLE/Contents/Resources/relaydock-edge" "$OUTPUT/Contents/Resources/relaydock-edge.tmp"
+  mv -f "$OUTPUT/Contents/Resources/relaydock-launch.tmp" "$OUTPUT/Contents/Resources/relaydock-launch"
+  mv -f "$OUTPUT/Contents/Resources/relaydock-edge.tmp" "$OUTPUT/Contents/Resources/relaydock-edge"
   cp -f "$BUNDLE/Contents/Resources/relaydock-free-usage-limit.js" "$OUTPUT/Contents/Resources/relaydock-free-usage-limit.js"
   chmod +x "$OUTPUT/Contents/Resources/relaydock-launch" "$OUTPUT/Contents/Resources/relaydock-edge"
 else

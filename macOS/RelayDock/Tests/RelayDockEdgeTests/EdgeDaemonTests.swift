@@ -317,7 +317,7 @@ struct EdgeDaemonTests {
         let route = await daemon.decideRoute()
         var refreshed = try store.loadWithFreeUsageLimits(now: now)
 
-        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600, rotate: false))
         #expect(refreshed.proxies[0].isFreeUsageLimited(at: now))
         guard case .upstream(let selected) = route else {
             Issue.record("Auto should continue through an available proxy")
@@ -377,7 +377,7 @@ struct EdgeDaemonTests {
             now: now
         )
 
-        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600, rotate: false))
         let refreshed = try store.loadWithFreeUsageLimits(now: now)
         #expect(refreshed.proxies[0].isFreeUsageLimited(at: now))
         #expect(!refreshed.proxies[1].isFreeUsageLimited(at: now))
@@ -463,7 +463,7 @@ struct EdgeDaemonTests {
             now: now
         )
 
-        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600))
+        #expect(result == .flagged(entryID: imported.proxies[0].id, retryAt: now + 3_600, rotate: false))
     }
 
     @Test func explicitFreeUsageReportsOnlyAcceptAnOpenCodeReporter() {
@@ -499,6 +499,162 @@ struct EdgeDaemonTests {
             }
             #expect(retryAt == now + 3_600)
         }
+    }
+
+    @Test func freeUsageLimitReportPlansRotationToAnotherAutoProxy() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-rotate-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log")),
+            peerResolver: { _, _ in EdgePeerInfo(pid: 123, name: "opencode") }
+        )
+        await daemon.registerTunnel(
+            clientPort: 40_001,
+            edgePort: 57_999,
+            entryID: imported.proxies[0].id,
+            label: "first"
+        )
+        let now = Date().timeIntervalSince1970
+        await daemon.noteTunnelActivity(clientPort: 40_001, at: now - 0.5)
+
+        let result = await daemon.reportFreeUsageLimit(
+            retryAfterMs: 3_600_000,
+            reportClientPort: 40_002,
+            edgePort: 57_999,
+            retryRequested: true,
+            now: now
+        )
+
+        guard case .flagged(let entryID, let retryAt, let rotate) = result else {
+            Issue.record("the report must pause the proxy that delivered the limit")
+            return
+        }
+        #expect(entryID == imported.proxies[0].id)
+        #expect(retryAt == now + 3_600)
+        #expect(rotate, "another eligible proxy must accept the automatic retry")
+
+        let route = await daemon.decideRoute()
+        guard case .upstream(let selected) = route else {
+            Issue.record("the retry must resolve to the remaining eligible proxy")
+            return
+        }
+        #expect(selected.entryID == imported.proxies[1].id)
+    }
+
+    @Test func manualModeFailsOverForTheFreeUsagePauseWithoutChangingSelection() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-manual-failover-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        let first = imported.proxies[0]
+        let second = imported.proxies[1]
+        _ = try store.setMode(.manual, manualId: first.id)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        let now = Date().timeIntervalSince1970
+        _ = await daemon.persistFreeUsageLimit(entryID: first.id, retryAfterMs: 3_600_000, now: now)
+
+        let refused = await daemon.decideRoute()
+        guard case .refuse(_, let refusalRetryAt) = refused else {
+            Issue.record("a persisted cooldown alone must fail closed in Manual mode")
+            return
+        }
+        #expect(refusalRetryAt == now + 3_600)
+
+        let armed = await daemon.planFreeUsageRetry(
+            entryID: first.id,
+            retryAt: now + 3_600,
+            edgePort: 57_999,
+            now: now
+        )
+        #expect(armed)
+
+        let routed = await daemon.decideRoute()
+        guard case .upstream(let selected) = routed else {
+            Issue.record("the armed Manual failover must route through another proxy")
+            return
+        }
+        #expect(selected.entryID == second.id)
+        #expect(try store.load().manualId == first.id, "failover must not rewrite the saved Manual choice")
+
+        let pinned = await daemon.decideRoute(pinning: first.id)
+        guard case .refuse = pinned else {
+            Issue.record("a pinned listener must never fail over to a different account")
+            return
+        }
+    }
+
+    @Test func pinnedListenerNeverUsesFreeUsageFailover() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-pinned-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        let first = imported.proxies[0]
+        _ = try store.setMode(.manual, manualId: first.id)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999, listeners: [.init(port: 58_123, entryID: first.id)]),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        let now = Date().timeIntervalSince1970
+        _ = await daemon.persistFreeUsageLimit(entryID: first.id, retryAfterMs: 3_600_000, now: now)
+
+        // The shared pool has an alternative, but the pinned port must keep
+        // its one account rather than borrow another entry.
+        let pinnedPort = await daemon.planFreeUsageRetry(
+            entryID: first.id,
+            retryAt: now + 3_600,
+            edgePort: 58_123,
+            now: now
+        )
+        #expect(!pinnedPort)
+
+        let routed = await daemon.decideRoute(pinning: first.id)
+        guard case .refuse = routed else {
+            Issue.record("the pinned listener must stay pinned")
+            return
+        }
+    }
+
+    @Test func freeUsageRetryDoesNotArmWhenEveryProxyIsPaused() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "relaydock-free-limit-exhausted-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ProxyStore(configDirectory: directory)
+        let imported = try store.importProxies("http://first.example:8080\nhttp://second.example:8080")
+        _ = try store.setMode(.auto, manualId: nil)
+        let daemon = EdgeDaemon(
+            config: EdgeConfigFile(port: 57_999),
+            directory: directory,
+            log: EdgeLog(url: directory.appending(path: "edge.log"))
+        )
+        let now = Date().timeIntervalSince1970
+        for entry in imported.proxies {
+            _ = await daemon.persistFreeUsageLimit(entryID: entry.id, retryAfterMs: 3_600_000, now: now)
+        }
+
+        let armed = await daemon.planFreeUsageRetry(
+            entryID: imported.proxies[0].id,
+            retryAt: now + 3_600,
+            edgePort: 57_999,
+            now: now
+        )
+        #expect(!armed, "an exhausted pool must surface the error instead of looping")
     }
 
     @Test func readsExpiryFromScriptSnapshots() {

@@ -432,6 +432,10 @@ struct ProxyAppModelTests {
             in: #"{"error":{"name":"FreeUsageLimitError","resetAtMs":1000}}"#,
             nowMilliseconds: 2_000
         ) == 1_000)
+        #expect(OpenCodeFreeUsageProbe.freeUsageLimitCooldown(
+            in: #"{"error":{"name":"FreeUsageLimitError","retryAfter":0}}"#,
+            nowMilliseconds: 1_000
+        ) == 1_000)
         #expect(OpenCodeFreeUsageProbe.defaultCooldownMilliseconds(nowMilliseconds: 0) == 86_400_000)
     }
 

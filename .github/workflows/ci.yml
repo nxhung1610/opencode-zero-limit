@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test RelayDockCore and SwiftUI app
         run: swift test --package-path macOS/RelayDock
+      - name: Test the bundled OpenCode free-usage plugin
+        run: node scripts/test-free-usage-plugin.mjs
       - name: Build macOS app bundle
         run: scripts/build-macos-app.sh
       - name: Validate app bundle
@@ -21,3 +23,4 @@ jobs:
           test -s build/RelayDock.app/Contents/Resources/AppIcon.icns
           test -x build/RelayDock.app/Contents/Resources/relaydock-launch
           test -x build/RelayDock.app/Contents/Resources/relaydock-edge
+          test -s build/RelayDock.app/Contents/Resources/relaydock-free-usage-limit.js

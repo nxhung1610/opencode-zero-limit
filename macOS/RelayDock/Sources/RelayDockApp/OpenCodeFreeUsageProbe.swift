@@ -199,9 +199,9 @@ enum OpenCodeFreeUsageProbe {
                 let number = (rawValue as? NSNumber)?.doubleValue ?? (rawValue as? String).flatMap(Double.init)
                 switch normalizedKey {
                 case "retryafterms":
-                    if let number, number.isFinite, number > 0 { return number }
+                    if let number, number.isFinite, number >= 0 { return number }
                 case "retryafterseconds", "retryafter":
-                    if let number, number.isFinite, number > 0 { return number * 1_000 }
+                    if let number, number.isFinite, number >= 0 { return number * 1_000 }
                     if normalizedKey == "retryafter", let date = dateMilliseconds(rawValue) {
                         return date - nowMilliseconds
                     }

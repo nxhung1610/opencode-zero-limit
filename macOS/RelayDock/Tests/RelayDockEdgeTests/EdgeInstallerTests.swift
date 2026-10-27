@@ -116,6 +116,26 @@ import Testing
         #expect(stopped == [fixture.binDirectory.appending(path: "relaydock-edge")])
     }
 
+    @Test func installKeepsTheExistingEdgeWhenTheNewCopyFails() throws {
+        let fixture = try InstallFixture()
+        defer { fixture.cleanUp() }
+        let output = OutputCapture()
+        let installer = fixture.makeInstaller(output: output)
+        #expect(
+            installer.install(sourceLauncher: fixture.launcherSource, sourceEdge: fixture.edgeSource) == 0
+        )
+        let installedEdge = fixture.binDirectory.appending(path: "relaydock-edge")
+        let original = try Data(contentsOf: installedEdge)
+
+        try FileManager.default.removeItem(at: fixture.edgeSource)
+        #expect(
+            installer.install(sourceLauncher: fixture.launcherSource, sourceEdge: fixture.edgeSource) == 1
+        )
+        #expect(FileManager.default.isExecutableFile(atPath: installedEdge.path))
+        #expect(try Data(contentsOf: installedEdge) == original)
+        #expect(output.errorText.contains("install failed"))
+    }
+
     @Test func uninstallRemovesTheInstallAndKeepsUserData() throws {
         let fixture = try InstallFixture()
         defer { fixture.cleanUp() }
@@ -167,6 +187,27 @@ import Testing
         #expect(code == 0)
         #expect(try String(contentsOf: fixture.openCodePlugin, encoding: .utf8) == "// a user's plugin\n")
         #expect(output.errorText.contains("preserving unrelated OpenCode plugin"))
+    }
+
+    @Test func installReportsAPluginWriteFailureWithoutSkippingEdge() throws {
+        let fixture = try InstallFixture()
+        defer { fixture.cleanUp() }
+        // Make the plugin directory a regular file so createDirectory fails.
+        let pluginDirectory = fixture.openCodePlugin.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: pluginDirectory.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try "not a directory".write(to: pluginDirectory, atomically: true, encoding: .utf8)
+        let output = OutputCapture()
+
+        let code = fixture.makeInstaller(output: output)
+            .install(sourceLauncher: fixture.launcherSource, sourceEdge: fixture.edgeSource)
+
+        #expect(code == 1)
+        #expect(output.errorText.contains("could not install the RelayDock OpenCode plugin"))
+        // Binaries still installed, so the user can fix permissions and retry.
+        let installedEdge = fixture.binDirectory.appending(path: "relaydock-edge")
+        #expect(FileManager.default.isExecutableFile(atPath: installedEdge.path))
     }
 
     @Test func uninstallWithoutAnInstallSucceedsQuietly() throws {
