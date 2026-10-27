@@ -206,6 +206,17 @@ by Edge instead of at spawn time.
 - **Report path:** the installed loopback plugin sees `FreeUsageLimitError` and POSTs a
   free-usage report to Edge on the port that carried the request. The plugin does not decide
   which proxy to pause.
+- **Automatic retry (OpenCode 2.x):** the same plugin hooks the HTTP response and OpenCode's
+  retry decision. When Edge confirms another eligible entry is available it answers
+  `rotate: true`, closes the tunnel that delivered the 429 after 750 ms, and the plugin asks
+  OpenCode to retry after 1.5 s. The retry therefore has to open a fresh CONNECT and reach a
+  different exit. Retries are bounded to three attempts in total (the original
+  request plus two retries); with an exhausted pool, or on OpenCode 1.x
+  (which has no retry hook), the error surfaces as before.
+- **Manual mode and pinned listeners:** a live report never rewrites the saved Manual
+  selection. For the reported deadline only, Edge borrows the rest of the eligible pool (Auto's
+  ordering and health rules) on the shared listener, then returns to the saved entry. A pinned
+  listener never fails over: its one account is the whole point.
 - **Attribution:** Edge accepts the report only from an OpenCode process it can identify, on the
   same Edge port. Among that process's live and recently ended tunnels (120 s window), it picks
   the one that most recently delivered response bytes. If a different entry delivered bytes
@@ -221,8 +232,8 @@ by Edge instead of at spawn time.
   the probe passes. An automatic recheck is limited to once per cooldown and only within the
   final 15 minutes, so RelayDock does not create a retry-pace signal during a long pause.
 - **Scope warning:** the free lane is account/network-wide (§7 of the research note). Two or more
-  enabled entries with reset deadlines within 30 minutes raise a pool banner saying so; RelayDock does not try
-  to rotate around an account-level limit.
+  enabled entries with reset deadlines within 30 minutes raise a pool banner saying so; the
+  automatic retry stays bounded and surfaces the error if the next exit is limited too.
 
 ## 5. Files, ports, lifecycle
 

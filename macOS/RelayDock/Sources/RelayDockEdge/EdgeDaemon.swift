@@ -41,7 +41,11 @@ enum EdgeCheckScope: Sendable {
 }
 
 enum EdgeFreeUsageLimitReport: Equatable, Sendable {
-    case flagged(entryID: String, retryAt: Double)
+    /// `rotate` is true only when the caller asked for a retry and Edge can
+    /// move it to another eligible entry. The tunnel that delivered the 429 is
+    /// retired only in that case, so an exhausted or pinned route is not torn
+    /// down for a retry that will never happen.
+    case flagged(entryID: String, retryAt: Double, rotate: Bool)
     case unmatched
     case invalidCooldown
     case persistenceFailed
@@ -151,6 +155,12 @@ actor EdgeDaemon {
     private var lastAutoFailureAt: [String: Double] = [:]
     private var resolveTask: InFlightResolve?
     private var resolveTaskSequence = 0
+    /// Test seam: true while a detached selection or Auto resolve is
+    /// registered. Tests use this to change the route while the old resolve is
+    /// genuinely in flight instead of racing a fixed sleep.
+    var hasInFlightResolve: Bool {
+        resolveTask != nil || !autoResolveTasks.isEmpty
+    }
     /// Bumped whenever a selection or a script changes. `selectionKey` alone is
     /// not enough: a switch away and back (A → B → A) would otherwise let a
     /// resolve started for the first A apply after the second A is selected.
@@ -181,6 +191,15 @@ actor EdgeDaemon {
     /// captured the old script, so its result must never be cached.
     private var pinnedResolveGeneration: [String: Int] = [:]
     private var pinnedErrors: [String: String] = [:]
+    /// While the Manual entry is paused by a live free-usage report, Edge
+    /// routes new tunnels through the rest of the eligible pool. The saved
+    /// Manual selection is never changed, and the override ends at the
+    /// proxy's reset deadline.
+    private var manualFreeUsageFailover: (entryID: String, until: Double)?
+    /// Client-side sockets for live tunnels, so a 429 can retire the exact
+    /// connection that carried it and force the automatic retry onto a fresh
+    /// CONNECT (and therefore a different proxy).
+    private var tunnelSockets: [UInt16: EdgeSocket] = [:]
     private var hopPool: [String: [(socket: EdgeSocket, createdAt: Double)]] = [:]
     private let hopPoolLifetime: TimeInterval = 20
     private let hopPoolDepth = 1
@@ -412,11 +431,25 @@ actor EdgeDaemon {
         if let selected = state.proxies.first(where: { $0.id == state.manualId }),
            selected.isFreeUsageLimited(at: now),
            let retryAt = selected.freeUsageLimitedUntil {
+            // A live report arms a temporary failover for the duration of the
+            // pause. Keep the saved Manual choice, but do not strand every
+            // request on a proxy that is known to be out of free quota.
+            if let failover = manualFreeUsageFailover,
+               failover.entryID == selected.id,
+               failover.until > now {
+                let decision = await autoRoute(state: state, excluding: [selected.id])
+                if case .upstream = decision {
+                    return decision
+                }
+            } else {
+                manualFreeUsageFailover = nil
+            }
             let reason = "proxy \(selected.label) is paused after an OpenCode free-usage limit"
             pendingReason = reason
             throttleRetryAt = retryAt
             return .refuse(reason: reason, retryAt: retryAt)
         }
+        manualFreeUsageFailover = nil
         if needsResolve(state: state, now: now) {
             if let outcome = await resolveLocked(state: state),
                case .success(let resolved, _) = outcome.kind {
@@ -462,6 +495,7 @@ actor EdgeDaemon {
 
         var attempted = excludedIDs
         var resolutionErrors: [String] = []
+        let expectedKey = selectionKey(state, now: now)
         let ordered = Self.orderedAutoProxies(eligible, after: autoLastEntryID)
         for entry in ordered where !attempted.contains(entry.id) {
             // Advance before awaiting script work; actor reentrancy must not
@@ -482,7 +516,7 @@ actor EdgeDaemon {
                 return .upstream(cached)
             }
 
-            let outcome = await resolveAutoEntry(entry)
+            let outcome = await resolveAutoEntry(entry, selectionKey: expectedKey)
             switch outcome.kind {
             case .success(let resolved, _):
                 let completedAt = Date().timeIntervalSince1970
@@ -532,7 +566,7 @@ actor EdgeDaemon {
         return .refuse(reason: reason, retryAt: retryAt)
     }
 
-    private func resolveAutoEntry(_ entry: ProxyEntry) async -> ResolveOutcome {
+    private func resolveAutoEntry(_ entry: ProxyEntry, selectionKey expectedKey: String) async -> ResolveOutcome {
         if let inFlight = autoResolveTasks[entry.id] {
             let outcome = await inFlight.task.value
             clearAutoResolveTask(inFlight, entryID: entry.id)
@@ -552,7 +586,7 @@ actor EdgeDaemon {
         let inFlight = InFlightResolve(
             id: resolveTaskSequence,
             selectionEpoch: selectionEpoch,
-            selectionKey: "auto",
+            selectionKey: expectedKey,
             scriptHashes: scriptHashes,
             bindings: [:],
             task: task
@@ -657,6 +691,37 @@ actor EdgeDaemon {
         )
     }
 
+    /// Decides whether Edge can move the automatic retry off the entry that
+    /// just hit the free limit. Auto needs another eligible entry; Manual
+    /// additionally arms a temporary failover for the duration of the pause.
+    /// Pinned listeners never fail over: their whole purpose is one account.
+    func planFreeUsageRetry(
+        entryID: String,
+        retryAt: Double,
+        edgePort: UInt16,
+        now: Double = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard Int(edgePort) == config.port,
+              let state = loadState(),
+              retryAt > now else { return false }
+        let alternatives = state.autoEligibleProxies(at: now).filter { $0.id != entryID }
+        guard !alternatives.isEmpty else {
+            manualFreeUsageFailover = nil
+            return false
+        }
+        switch state.mode {
+        case .auto:
+            return true
+        case .manual:
+            guard state.manualId == entryID else { return false }
+            manualFreeUsageFailover = (entryID: entryID, until: retryAt)
+            log.warn("manual proxy \(entryID) hit the free limit; failing over for the pause")
+            return true
+        case .off:
+            return false
+        }
+    }
+
     /// The loopback plugin reports a provider-level free-tier error. Attribute
     /// it to the tunnel that most recently received response bytes from the
     /// same OpenCode process. If two different entries are equally plausible,
@@ -667,6 +732,7 @@ actor EdgeDaemon {
         reportClientPort: UInt16?,
         edgePort: UInt16,
         explicitEntryID: String? = nil,
+        retryRequested: Bool = false,
         now: Double = Date().timeIntervalSince1970
     ) -> EdgeFreeUsageLimitReport {
         guard Self.validFreeUsageCooldown(retryAfterMs), now.isFinite else { return .invalidCooldown }
@@ -692,7 +758,22 @@ actor EdgeDaemon {
         ) {
         case .matched(let tunnel):
             guard let entryID = tunnel.entryID else { return .unmatched }
-            return persistFreeUsageLimit(entryID: entryID, retryAfterMs: retryAfterMs, now: now)
+            let result = persistFreeUsageLimit(entryID: entryID, retryAfterMs: retryAfterMs, now: now)
+            guard case .flagged(let flaggedID, let retryAt, _) = result else { return result }
+            // Plan the failover in the same actor call as the report. Manual
+            // mode arms its pause-long failover for any live report; `rotate`
+            // and tunnel retirement stay tied to an actual retry request.
+            let canRotate = planFreeUsageRetry(
+                entryID: flaggedID, retryAt: retryAt, edgePort: edgePort, now: now
+            )
+            let rotate = retryRequested && canRotate
+            if rotate, let socket = tunnelSockets[tunnel.clientPort] {
+                // The plugin will retry after RETRY_DELAY_MS. Retire this
+                // connection first so the retry cannot reuse the same TLS
+                // session (and therefore the same limited exit IP).
+                Self.retireTunnel(socket: socket, label: tunnel.label ?? entryID, log: log)
+            }
+            return .flagged(entryID: flaggedID, retryAt: retryAt, rotate: rotate)
         case .ambiguous(let entryIDs):
             log.warn(
                 "free-usage report is ambiguous for OpenCode pid \(reporter.pid); "
@@ -728,7 +809,7 @@ actor EdgeDaemon {
             let label = state.proxies.first(where: { $0.id == entryID })?.label ?? entryID
             log.warn("OpenCode FreeUsageLimitError: paused \(label) for \(Int((retryAt - now).rounded()))s")
             pushError("OpenCode free-usage limit via \(label); paused until \(Int(retryAt))")
-            return .flagged(entryID: entryID, retryAt: retryAt)
+            return .flagged(entryID: entryID, retryAt: retryAt, rotate: false)
         } catch {
             log.error("could not persist OpenCode free-usage cooldown for \(entryID): \(error.localizedDescription)")
             return .persistenceFailed
@@ -737,6 +818,20 @@ actor EdgeDaemon {
 
     static func validFreeUsageCooldown(_ retryAfterMs: Double) -> Bool {
         retryAfterMs.isFinite && (1_000...604_800_000).contains(retryAfterMs)
+    }
+
+    /// How long Edge waits before retiring the connection that delivered the
+    /// 429. The plugin has already read the small error body; the short delay
+    /// leaves room for that read to finish. The plugin's retry delay is longer,
+    /// so the retry must open a fresh CONNECT.
+    static let freeUsageTunnelCloseDelay: TimeInterval = 0.75
+
+    private static func retireTunnel(socket: EdgeSocket, label: String, log: EdgeLog) {
+        Task.detached {
+            try? await Task.sleep(nanoseconds: UInt64(freeUsageTunnelCloseDelay * 1_000_000_000))
+            log.info("retiring the free-limited tunnel via \(label) so the retry opens a new connection")
+            socket.cancel()
+        }
     }
 
     static func isOpenCodeProcessName(_ name: String) -> Bool {
@@ -1225,9 +1320,18 @@ actor EdgeDaemon {
 
     // MARK: - Tunnels
 
-    func registerTunnel(clientPort: UInt16?, edgePort: UInt16, entryID: String?, label: String?) {
+    func registerTunnel(
+        clientPort: UInt16?,
+        edgePort: UInt16,
+        entryID: String?,
+        label: String?,
+        socket: EdgeSocket? = nil
+    ) {
         tunnelsTotal += 1
         guard let clientPort else { return }
+        if let socket {
+            tunnelSockets[clientPort] = socket
+        }
         // Resolve the peer now: the client TCP connection is guaranteed to be
         // established at registration, while a lookup from `status()` may run
         // after the tunnel closed and can no longer be attributed.
@@ -1266,6 +1370,7 @@ actor EdgeDaemon {
 
     func finishTunnel(clientPort: UInt16?, bytesUp: Int, bytesDown: Int) {
         guard let clientPort, var record = tunnelsActive.removeValue(forKey: clientPort) else { return }
+        tunnelSockets.removeValue(forKey: clientPort)
         record.bytesUp = bytesUp
         record.bytesDown = bytesDown
         record.active = false
