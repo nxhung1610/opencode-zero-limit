@@ -23,7 +23,8 @@ try {
     target,
     "\nexport { defaultCooldownMs, isFreeUsageLimitText, cooldownFromBody };\n"
   );
-  const { defaultCooldownMs, cooldownFromBody } = await import(pathToFileURL(target).href);
+  const module = await import(pathToFileURL(target).href);
+  const { defaultCooldownMs, cooldownFromBody } = module;
 
   const cases = [
     // 2026-10-25T23:59:00Z -> one minute until midnight.
@@ -52,7 +53,36 @@ try {
   // The V2 retry hook is the part that keeps a free-limit response away from
   // the CLI. Drive it through the real plugin setup so the test covers hook
   // registration, the Edge report, and the retry decision together.
-  const plugin = (await import(pathToFileURL(target).href)).default;
+  const plugin = module.default;
+  // OpenCode 1.x rejects a default export with `id` but no `server()`, and
+  // then ignores the named-export fallback. Both entries must be the same
+  // factory so older hosts load the event-only plugin.
+  assert.equal(typeof plugin.server, "function", "V1 requires a server factory");
+  assert.equal(plugin.server, module.RelayDockFreeUsageLimit, "V1 named export is the same factory");
+  const v1Hooks = await plugin.server({});
+  assert.equal(typeof v1Hooks.event, "function", "V1 event hook is registered");
+
+  // V1 has no retry hook, but the event hook must still report the limit so
+  // Edge pauses the proxy that delivered it.
+  const v1Reports = [];
+  const previousFetch = globalThis.fetch;
+  process.env.HTTP_PROXY = "http://127.0.0.1:57211";
+  globalThis.fetch = async (url) => {
+    v1Reports.push(String(url));
+    return new Response(JSON.stringify({ status: "recorded", entryID: "px_v1", rotate: false }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  await v1Hooks.event({
+    event: {
+      type: "session.error",
+      properties: { error: { name: "FreeUsageLimitError", message: "free usage limit reached" } },
+    },
+  });
+  globalThis.fetch = previousFetch;
+  assert.equal(v1Reports.length, 1, "V1 event hook reports the limit");
+  assert.match(v1Reports[0], /retryAfterMs=/);
   const hooks = {};
   const controller = new AbortController();
   const originalFetch = globalThis.fetch;

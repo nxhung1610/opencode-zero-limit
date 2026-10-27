@@ -315,12 +315,18 @@ async function handleEvent(event) {
 // Keep V1 compatibility for OpenCode 1.x, which discovers named plugin
 // functions. V1 has no retry hook, so it still reports the limit and pauses
 // the proxy; only V2 can retry without a user action.
-export const RelayDockFreeUsageLimit = async () => ({
+const RelayDockFreeUsageLimitPlugin = async () => ({
   event: async ({ event }) => handleEvent(event),
 });
 
+export const RelayDockFreeUsageLimit = RelayDockFreeUsageLimitPlugin;
+
 export default {
   id: "relaydock-free-usage-limit",
+  // OpenCode 1.x requires the default export to carry `server()`; newer V1
+  // loaders ignore the named-export fallback once `id` is present. Keep the
+  // same factory on both paths so only one hook set is registered.
+  server: RelayDockFreeUsageLimitPlugin,
   async setup(ctx) {
     const registrations = [];
     if (typeof ctx?.session?.hook === "function") {

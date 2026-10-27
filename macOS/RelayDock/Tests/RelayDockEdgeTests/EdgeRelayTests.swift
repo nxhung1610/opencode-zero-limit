@@ -199,4 +199,38 @@ struct EdgeRelayTests {
         #expect(tail.isEmpty)
         #expect(ended)
     }
+
+    /// A client that already waited the full stall window and then gives up
+    /// must not grant the silent upstream a second watchdog window.
+    @Test func aSilentUpstreamThatOutlivedTheStallWindowEndsImmediately() async throws {
+        let (directory, daemon) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (client, edgeClient) = try makeTCPPair()
+        let (upstream, edgeUpstream) = try makeTCPPair()
+        defer {
+            client.cancel()
+            upstream.cancel()
+        }
+
+        let connection = makeConnection(socket: edgeClient, daemon: daemon, directory: directory)
+        let relay = Task {
+            try await connection.relay(
+                to: EdgeUpstreamTunnel(socket: edgeUpstream, initialData: Data()),
+                clientPrelude: Data(),
+                upstreamEntryID: nil,
+                label: nil,
+                halfCloseFirstByteTimeout: 0.2
+            )
+        }
+
+        let request = Data("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n".utf8)
+        try await client.send(request)
+        // Outlive the stall window while the upstream stays silent.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let halfClosedAt = Date()
+        client.halfCloseWrite()
+
+        try await withEdgeTimeout(2, cancelling: edgeUpstream) { try await relay.value }
+        #expect(Date().timeIntervalSince(halfClosedAt) < 0.1)
+    }
 }

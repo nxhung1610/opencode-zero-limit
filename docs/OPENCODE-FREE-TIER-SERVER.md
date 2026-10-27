@@ -524,9 +524,18 @@ does not mint new identities, reset the counter, or change the provider's accoun
   the same filename is preserved and does not count as an update.
 - **Tunnel attribution:** a report is matched to the tunnel from the same OpenCode pid on the same
   Edge port that most recently delivered response bytes (within 120 seconds), not to the newest
-  tunnel. If two different entries delivered bytes within two seconds of each other, the report is
+  tunnel. The npm-installed macOS binary is named `opencode.exe`, so both `opencode` and
+  `opencode.exe` are accepted. A live tunnel that is still delivering the 429 outranks a request
+  that finished moments earlier; two different entries that are both live within two seconds are
   ambiguous and RelayDock pauses nothing. A missed pause is preferable to quarantining a healthy
   proxy.
+- **Compatibility:** OpenCode 1.x loads the default export's `server()` factory and reports through
+  its event stream; it has no retry hook. OpenCode 2.x uses `setup`, the native `http.response`
+  hook, and the bounded `retry` hook.
+- **Verification:** a controlled end-to-end run with OpenCode 2.2.0, a mock provider, and two local
+  proxies returned a 429 on the primary request, paused the delivering proxy, retired its tunnel,
+  and retried successfully through the other proxy. OpenCode 1.19.4 loaded the V1 export and
+  reported the event. A real provider free-limit response has not been exercised end-to-end.
 - **Recovery:** the row shows the absolute local reset time. **Retry now** sends one small probe
   through that proxy; only a pass clears the cooldown. An automatic recheck runs at most once per
   cooldown, in the 15 minutes before the reset (polled every 10 minutes), so it does not create a
